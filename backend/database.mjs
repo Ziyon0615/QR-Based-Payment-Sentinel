@@ -49,6 +49,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    email TEXT COLLATE NOCASE,
     password_hash TEXT NOT NULL,
     password_salt TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'user',
@@ -65,15 +66,21 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 `);
 
+const userColumns = db.prepare("PRAGMA table_info(users)").all();
+if (!userColumns.some((column) => column.name === "email")) {
+  db.exec("ALTER TABLE users ADD COLUMN email TEXT COLLATE NOCASE");
+}
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL");
+
 function passwordHash(password, salt) {
   return scryptSync(password, salt, 64).toString("hex");
 }
 
-function createUserRecord(username, password, role = "user") {
+function createUserRecord(username, password, role = "user", email = null) {
   const salt = randomBytes(16).toString("hex");
-  const user = { id: randomUUID(), username, role, createdAt: new Date().toISOString() };
-  db.prepare("INSERT INTO users (id, username, password_hash, password_salt, role, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(user.id, user.username, passwordHash(password, salt), salt, user.role, user.createdAt);
+  const user = { id: randomUUID(), username, email, role, createdAt: new Date().toISOString() };
+  db.prepare("INSERT INTO users (id, username, email, password_hash, password_salt, role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run(user.id, user.username, user.email, passwordHash(password, salt), salt, user.role, user.createdAt);
   return user;
 }
 
@@ -105,16 +112,20 @@ function safeJson(value, fallback) {
 }
 
 function publicUser(row) {
-  return row ? { id: row.id, username: row.username, role: row.role, createdAt: row.created_at } : null;
+  return row ? { id: row.id, username: row.username, email: row.email, role: row.role, createdAt: row.created_at } : null;
 }
 
 export function registerUser(input) {
   const username = String(input.username || "").trim();
+  const email = String(input.email || "").trim().toLowerCase();
   const password = String(input.password || "");
   if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(username)) throw new Error("Username must be 3 to 32 letters, numbers, dots, dashes, or underscores.");
+  if (!/[a-zA-Z]/.test(username)) throw new Error("Username cannot contain numbers only. Add at least one letter.");
+  if (email.length > 254 || !/^[a-z0-9._%+-]+@gmail\.com$/i.test(email)) throw new Error("Enter a valid Gmail address ending in @gmail.com.");
   if (password.length < 8 || password.length > 128) throw new Error("Password must be between 8 and 128 characters.");
   if (db.prepare("SELECT id FROM users WHERE username = ?").get(username)) throw new Error("Username is already registered.");
-  return createUserRecord(username, password);
+  if (db.prepare("SELECT id FROM users WHERE email = ?").get(email)) throw new Error("Gmail address is already registered.");
+  return createUserRecord(username, password, "user", email);
 }
 
 export function authenticateUser(usernameInput, passwordInput) {

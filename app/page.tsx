@@ -20,7 +20,7 @@ type Stats = {
   total: number; safe: number; suspicious: number; malicious: number; meanLatencyMs: number; p95LatencyMs: number;
 };
 type Ioc = { id: string; indicator: string; indicator_type: string; severity: string; confidence: number; source: string; active: number };
-type User = { id: string; username: string; role: string; createdAt: string };
+type User = { id: string; username: string; email?: string | null; role: string; createdAt: string };
 
 const emptyStats: Stats = {
   total: 0, safe: 0, suspicious: 0, malicious: 0, meanLatencyMs: 0, p95LatencyMs: 0,
@@ -38,7 +38,7 @@ export default function Home() {
   const [authStatus, setAuthStatus] = useState<"loading" | "guest" | "authenticated">("loading");
   const [user, setUser] = useState<User | null>(null);
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
-  const [authForm, setAuthForm] = useState({ username: "", password: "", confirmPassword: "" });
+  const [authForm, setAuthForm] = useState({ username: "", email: "", password: "", confirmPassword: "" });
   const [authMessage, setAuthMessage] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [online, setOnline] = useState(false);
@@ -170,17 +170,21 @@ export default function Home() {
 
   async function submitAuthentication(event: FormEvent) {
     event.preventDefault(); setAuthMessage("");
-    if (authMode === "register" && authForm.password !== authForm.confirmPassword) { setAuthMessage("Passwords do not match."); return; }
+    if (authMode === "register") {
+      if (!/[a-zA-Z]/.test(authForm.username)) { setAuthMessage("Username cannot contain numbers only. Add at least one letter."); return; }
+      if (!/^[a-z0-9._%+-]+@gmail\.com$/i.test(authForm.email.trim())) { setAuthMessage("Enter a valid Gmail address ending in @gmail.com."); return; }
+      if (authForm.password !== authForm.confirmPassword) { setAuthMessage("Passwords do not match."); return; }
+    }
     setAuthBusy(true);
     try {
       const response = await apiFetch(`/api/auth/${authMode}`, {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username: authForm.username, password: authForm.password }),
+        body: JSON.stringify({ username: authForm.username, email: authForm.email, password: authForm.password }),
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "Authentication failed.");
       setUser(body.user); setAuthStatus("authenticated"); setView("dashboard");
-      setAuthForm({ username: "", password: "", confirmPassword: "" });
+      setAuthForm({ username: "", email: "", password: "", confirmPassword: "" });
     } catch (error) { setAuthMessage(error instanceof Error ? error.message : "Authentication failed."); }
     finally { setAuthBusy(false); }
   }
@@ -262,12 +266,12 @@ function AuthLoading() {
 
 function AuthScreen({ mode, form, message, busy, onModeChange, onFormChange, onSubmit }: {
   mode: "login" | "register";
-  form: { username: string; password: string; confirmPassword: string };
+  form: { username: string; email: string; password: string; confirmPassword: string };
   message: string;
   busy: boolean;
   onModeChange: (mode: "login" | "register") => void;
-  onFormChange: (form: { username: string; password: string; confirmPassword: string }) => void;
+  onFormChange: (form: { username: string; email: string; password: string; confirmPassword: string }) => void;
   onSubmit: (event: FormEvent) => void;
 }) {
-  return <main className="auth-shell"><section className="auth-card"><div className="auth-intro"><div className="auth-brand"><span className="brand-mark"><span>Q</span></span><span><strong>QRBased</strong><small>Sentinel</small></span></div><p className="eyebrow">PAYMENT QR SECURITY</p><h1>Scan with confidence.</h1><p>Inspect QR payment payloads, review risk signals, and monitor scan activity from a protected workspace.</p><div className="auth-features"><span>◆ Explainable risk scoring</span><span>◆ QR image and camera scanning</span><span>◆ Local threat-intelligence matching</span></div></div><form className="auth-form" onSubmit={onSubmit}><div className="auth-tabs"><button type="button" className={mode === "login" ? "active" : ""} onClick={() => onModeChange("login")}>Sign in</button><button type="button" className={mode === "register" ? "active" : ""} onClick={() => onModeChange("register")}>Register</button></div><div><p className="eyebrow">{mode === "login" ? "WELCOME BACK" : "CREATE AN ACCOUNT"}</p><h2>{mode === "login" ? "Sign in to continue" : "Set up your access"}</h2><p>{mode === "login" ? "Use your account credentials to open the dashboard." : "Choose a username and a password with at least eight characters."}</p></div><label>Username<input autoComplete="username" required minLength={3} maxLength={32} value={form.username} onChange={(event) => onFormChange({ ...form, username: event.target.value })} placeholder="Enter username" /></label><label>Password<input type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} required minLength={8} maxLength={128} value={form.password} onChange={(event) => onFormChange({ ...form, password: event.target.value })} placeholder="Enter password" /></label>{mode === "register" && <label>Confirm password<input type="password" autoComplete="new-password" required minLength={8} maxLength={128} value={form.confirmPassword} onChange={(event) => onFormChange({ ...form, confirmPassword: event.target.value })} placeholder="Repeat password" /></label>}<button className="analyze-button" disabled={busy}>{busy ? "Please wait…" : mode === "login" ? "Sign in" : "Create account"}<span>→</span></button>{message && <p className="form-message" role="alert">{message}</p>}<small className="auth-note">Administrator username: <b>qradmin</b></small></form></section></main>;
+  return <main className="auth-shell"><section className="auth-card"><div className="auth-intro"><div className="auth-brand"><span className="brand-mark"><span>Q</span></span><span><strong>QRBased</strong><small>Sentinel</small></span></div><p className="eyebrow">PAYMENT QR SECURITY</p><h1>Scan with confidence.</h1><p>Inspect QR payment payloads, review risk signals, and monitor scan activity from a protected workspace.</p><div className="auth-features"><span>◆ Explainable risk scoring</span><span>◆ QR image and camera scanning</span><span>◆ Local threat-intelligence matching</span></div></div><form className="auth-form" onSubmit={onSubmit}><div className="auth-tabs"><button type="button" className={mode === "login" ? "active" : ""} onClick={() => onModeChange("login")}>Sign in</button><button type="button" className={mode === "register" ? "active" : ""} onClick={() => onModeChange("register")}>Register</button></div><div><p className="eyebrow">{mode === "login" ? "WELCOME BACK" : "CREATE AN ACCOUNT"}</p><h2>{mode === "login" ? "Sign in to continue" : "Set up your access"}</h2><p>{mode === "login" ? "Use your account credentials to open the dashboard." : "Create a username with letters and register it with a Gmail address."}</p></div><label>Username<input autoComplete="username" required minLength={3} maxLength={32} pattern="(?=.*[A-Za-z])[A-Za-z0-9_.-]{3,32}" title="Use 3–32 allowed characters and include at least one letter." value={form.username} onChange={(event) => onFormChange({ ...form, username: event.target.value })} placeholder="Enter username" /></label>{mode === "register" && <label>Gmail address<input type="email" autoComplete="email" required maxLength={254} pattern="[A-Za-z0-9._%+-]+@gmail[.]com" title="Enter a Gmail address ending in @gmail.com." value={form.email} onChange={(event) => onFormChange({ ...form, email: event.target.value })} placeholder="name@gmail.com" /></label>}<label>Password<input type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} required minLength={8} maxLength={128} value={form.password} onChange={(event) => onFormChange({ ...form, password: event.target.value })} placeholder="Enter password" /></label>{mode === "register" && <label>Confirm password<input type="password" autoComplete="new-password" required minLength={8} maxLength={128} value={form.confirmPassword} onChange={(event) => onFormChange({ ...form, confirmPassword: event.target.value })} placeholder="Repeat password" /></label>}<button className="analyze-button" disabled={busy}>{busy ? "Please wait…" : mode === "login" ? "Sign in" : "Create account"}<span>→</span></button>{message && <p className="form-message" role="alert">{message}</p>}<small className="auth-note">Administrator username: <b>qradmin</b></small></form></section></main>;
 }

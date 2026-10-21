@@ -130,7 +130,7 @@ const server = createServer(async (request, response) => {
     const message = error?.message || "Unexpected server error";
     const status = /already registered/i.test(message)
       ? 409
-      : /required|limit|JSON|Payload|Username|Password/i.test(message)
+      : /required|limit|JSON|Payload|Username|Password|Gmail|email/i.test(message)
         ? 400
         : 500;
     return send(request, response, status, { error: message });

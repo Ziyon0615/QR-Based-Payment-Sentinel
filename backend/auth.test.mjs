@@ -55,7 +55,7 @@ test("protects application data and supports login, registration, and logout", a
   const registration = await fetch(`${api.baseUrl}/api/auth/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ username: "new_user", password: "secure-pass-123" }),
+    body: JSON.stringify({ username: "new_user", email: "new.user@gmail.com", password: "secure-pass-123" }),
   });
   assert.equal(registration.status, 201);
   assert.equal((await registration.json()).user.role, "user");
@@ -63,9 +63,30 @@ test("protects application data and supports login, registration, and logout", a
   const duplicate = await fetch(`${api.baseUrl}/api/auth/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ username: "new_user", password: "secure-pass-123" }),
+    body: JSON.stringify({ username: "new_user", email: "another@gmail.com", password: "secure-pass-123" }),
   });
   assert.equal(duplicate.status, 409);
+
+  const duplicateEmail = await fetch(`${api.baseUrl}/api/auth/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: "different_user", email: "NEW.USER@gmail.com", password: "secure-pass-123" }),
+  });
+  assert.equal(duplicateEmail.status, 409);
+
+  const numericUsername = await fetch(`${api.baseUrl}/api/auth/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: "123456", email: "numbers@gmail.com", password: "secure-pass-123" }),
+  });
+  assert.equal(numericUsername.status, 400);
+
+  const nonGmailAddress = await fetch(`${api.baseUrl}/api/auth/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: "valid_user", email: "user@example.com", password: "secure-pass-123" }),
+  });
+  assert.equal(nonGmailAddress.status, 400);
 
   const logout = await fetch(`${api.baseUrl}/api/auth/logout`, {
     method: "POST",

@@ -39,6 +39,13 @@ test("protects application data and supports login, registration, and logout", a
   const unauthenticated = await fetch(`${api.baseUrl}/api/scans`);
   assert.equal(unauthenticated.status, 401);
 
+  const wrongPassword = await fetch(`${api.baseUrl}/api/auth/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: "qradmin", password: "wrong-password" }),
+  });
+  assert.equal(wrongPassword.status, 401);
+
   const login = await fetch(`${api.baseUrl}/api/auth/login`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -87,6 +94,27 @@ test("protects application data and supports login, registration, and logout", a
     body: JSON.stringify({ username: "valid_user", email: "user@example.com", password: "secure-pass-123" }),
   });
   assert.equal(nonGmailAddress.status, 400);
+
+  const invalidUsernameCharacters = await fetch(`${api.baseUrl}/api/auth/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: "invalid user!", email: "valid@gmail.com", password: "secure-pass-123" }),
+  });
+  assert.equal(invalidUsernameCharacters.status, 400);
+
+  const shortPassword = await fetch(`${api.baseUrl}/api/auth/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: "valid_user", email: "valid@gmail.com", password: "short" }),
+  });
+  assert.equal(shortPassword.status, 400);
+
+  const missingGmail = await fetch(`${api.baseUrl}/api/auth/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: "valid_user", password: "secure-pass-123" }),
+  });
+  assert.equal(missingGmail.status, 400);
 
   const logout = await fetch(`${api.baseUrl}/api/auth/logout`, {
     method: "POST",

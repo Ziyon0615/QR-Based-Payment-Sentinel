@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 
 const children = [
-  spawn(process.execPath, ["backend/server.mjs"], { stdio: "inherit" }),
+  spawn(process.execPath, ["--watch", "backend/server.mjs"], { stdio: "inherit" }),
   spawn(process.execPath, ["node_modules/next/dist/bin/next", "dev"], {
     stdio: "inherit",
   }),

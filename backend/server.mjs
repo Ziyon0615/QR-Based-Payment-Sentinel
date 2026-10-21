@@ -74,6 +74,10 @@ function allowLoginAttempt(request) {
   return true;
 }
 
+function clearLoginAttempts(request) {
+  loginAttempts.delete(request.socket.remoteAddress || "unknown");
+}
+
 const server = createServer(async (request, response) => {
   if (request.method === "OPTIONS") {
     response.writeHead(204, corsHeaders(request));
@@ -92,6 +96,7 @@ const server = createServer(async (request, response) => {
       const input = await readJson(request);
       const user = authenticateUser(input.username, input.password);
       if (!user) return send(request, response, 401, { error: "Invalid username or password." });
+      clearLoginAttempts(request);
       const session = createSession(user.id);
       return send(request, response, 200, { user }, { "set-cookie": sessionCookie(session.token) });
     }

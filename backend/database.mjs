@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 
 const databasePath = resolve(process.env.DATABASE_PATH || "data/qr-sentinel.db");
 mkdirSync(dirname(databasePath), { recursive: true });
@@ -45,7 +45,41 @@ db.exec(`
     expires_at TEXT,
     UNIQUE(indicator, indicator_type)
   );
+
+  CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash TEXT NOT NULL,
+    password_salt TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user',
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 `);
+
+function passwordHash(password, salt) {
+  return scryptSync(password, salt, 64).toString("hex");
+}
+
+function createUserRecord(username, password, role = "user") {
+  const salt = randomBytes(16).toString("hex");
+  const user = { id: randomUUID(), username, role, createdAt: new Date().toISOString() };
+  db.prepare("INSERT INTO users (id, username, password_hash, password_salt, role, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(user.id, user.username, passwordHash(password, salt), salt, user.role, user.createdAt);
+  return user;
+}
+
+if (!db.prepare("SELECT id FROM users WHERE username = ?").get("qradmin")) {
+  createUserRecord("qradmin", "qradmin123", "admin");
+}
 
 const seedIoc = db.prepare(`
   INSERT OR IGNORE INTO iocs
@@ -68,6 +102,57 @@ function safeJson(value, fallback) {
   } catch {
     return fallback;
   }
+}
+
+function publicUser(row) {
+  return row ? { id: row.id, username: row.username, role: row.role, createdAt: row.created_at } : null;
+}
+
+export function registerUser(input) {
+  const username = String(input.username || "").trim();
+  const password = String(input.password || "");
+  if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(username)) throw new Error("Username must be 3 to 32 letters, numbers, dots, dashes, or underscores.");
+  if (password.length < 8 || password.length > 128) throw new Error("Password must be between 8 and 128 characters.");
+  if (db.prepare("SELECT id FROM users WHERE username = ?").get(username)) throw new Error("Username is already registered.");
+  return createUserRecord(username, password);
+}
+
+export function authenticateUser(usernameInput, passwordInput) {
+  const username = String(usernameInput || "").trim();
+  const password = String(passwordInput || "");
+  const row = db.prepare("SELECT * FROM users WHERE username = ?").get(username);
+  if (!row) return null;
+  const supplied = Buffer.from(passwordHash(password, row.password_salt), "hex");
+  const stored = Buffer.from(row.password_hash, "hex");
+  return supplied.length === stored.length && timingSafeEqual(supplied, stored) ? publicUser(row) : null;
+}
+
+export function createSession(userId) {
+  db.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(new Date().toISOString());
+  const token = randomBytes(32).toString("hex");
+  const tokenHash = createHash("sha256").update(token).digest("hex");
+  const createdAt = new Date();
+  const expiresAt = new Date(createdAt.getTime() + 12 * 60 * 60 * 1000);
+  db.prepare("INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
+    .run(tokenHash, userId, createdAt.toISOString(), expiresAt.toISOString());
+  return { token, expiresAt };
+}
+
+export function getSessionUser(token) {
+  if (!token) return null;
+  const tokenHash = createHash("sha256").update(token).digest("hex");
+  const row = db.prepare(`
+    SELECT users.* FROM sessions
+    JOIN users ON users.id = sessions.user_id
+    WHERE sessions.token_hash = ? AND sessions.expires_at > ?
+  `).get(tokenHash, new Date().toISOString());
+  return publicUser(row);
+}
+
+export function deleteSession(token) {
+  if (!token) return;
+  const tokenHash = createHash("sha256").update(token).digest("hex");
+  db.prepare("DELETE FROM sessions WHERE token_hash = ?").run(tokenHash);
 }
 
 function hydrateScan(row) {

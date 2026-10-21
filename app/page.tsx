@@ -18,23 +18,29 @@ type Scan = {
 };
 type Stats = {
   total: number; safe: number; suspicious: number; malicious: number; meanLatencyMs: number; p95LatencyMs: number;
-  evaluation: { sampleSize: number; tp: number; tn: number; fp: number; fn: number; accuracy: number | null; precision: number | null; recall: number | null; f1: number | null; falsePositiveRate: number | null; falseNegativeRate: number | null };
 };
 type Ioc = { id: string; indicator: string; indicator_type: string; severity: string; confidence: number; source: string; active: number };
+type User = { id: string; username: string; role: string; createdAt: string };
 
 const emptyStats: Stats = {
   total: 0, safe: 0, suspicious: 0, malicious: 0, meanLatencyMs: 0, p95LatencyMs: 0,
-  evaluation: { sampleSize: 0, tp: 0, tn: 0, fp: 0, fn: 0, accuracy: null, precision: null, recall: null, f1: null, falsePositiveRate: null, falseNegativeRate: null },
 };
-const navItems = [["scan", "Scanner"], ["history", "Scan history"], ["research", "Research metrics"], ["intel", "Threat intelligence"]] as const;
+const navItems = [["dashboard", "Dashboard"], ["scan", "Scanner"], ["history", "Scan history"], ["intel", "Threat intelligence"]] as const;
 const shortText = (value: string | null | undefined, length = 48) => {
   if (!value) return "Payload unavailable";
   return value.length > length ? `${value.slice(0, length)}…` : value;
 };
-const percent = (value: number | null) => value === null ? "—" : `${(value * 100).toFixed(1)}%`;
+const percentage = (value: number, total: number) => total ? `${((value / total) * 100).toFixed(1)}%` : "0.0%";
+const apiFetch = (path: string, init: RequestInit = {}) => fetch(`${API_URL}${path}`, { ...init, credentials: "include" });
 
 export default function Home() {
-  const [view, setView] = useState<(typeof navItems)[number][0]>("scan");
+  const [view, setView] = useState<(typeof navItems)[number][0]>("dashboard");
+  const [authStatus, setAuthStatus] = useState<"loading" | "guest" | "authenticated">("loading");
+  const [user, setUser] = useState<User | null>(null);
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [authForm, setAuthForm] = useState({ username: "", password: "", confirmPassword: "" });
+  const [authMessage, setAuthMessage] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
   const [online, setOnline] = useState(false);
   const [payload, setPayload] = useState("");
   const [result, setResult] = useState<Scan | null>(null);
@@ -56,9 +62,10 @@ export default function Home() {
   const refresh = useCallback(async () => {
     try {
       const [healthResponse, scansResponse, statsResponse, iocsResponse] = await Promise.all([
-        fetch(`${API_URL}/api/health`), fetch(`${API_URL}/api/scans?limit=50`), fetch(`${API_URL}/api/stats`), fetch(`${API_URL}/api/iocs`),
+        apiFetch("/api/health"), apiFetch("/api/scans?limit=50"), apiFetch("/api/stats"), apiFetch("/api/iocs"),
       ]);
       setOnline(healthResponse.ok);
+      if (scansResponse.status === 401) { setUser(null); setAuthStatus("guest"); return; }
       if (scansResponse.ok) setHistory((await scansResponse.json()).scans);
       if (statsResponse.ok) setStats(await statsResponse.json());
       if (iocsResponse.ok) setIocs((await iocsResponse.json()).iocs);
@@ -66,9 +73,21 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void apiFetch("/api/auth/me").then(async (response) => {
+        if (!response.ok) { setAuthStatus("guest"); return; }
+        const body = await response.json();
+        setUser(body.user); setAuthStatus("authenticated");
+      }).catch(() => setAuthStatus("guest"));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (authStatus !== "authenticated") return;
     const timer = window.setTimeout(() => { void refresh(); }, 0);
     return () => window.clearTimeout(timer);
-  }, [refresh]);
+  }, [authStatus, refresh]);
 
   const stopCamera = useCallback(() => {
     if (frameRef.current) cancelAnimationFrame(frameRef.current);
@@ -81,7 +100,7 @@ export default function Home() {
     if (!value.trim()) { setMessage("Paste or scan a QR payload first."); return; }
     setBusy(true); setMessage("");
     try {
-      const response = await fetch(`${API_URL}/api/analyze`, {
+      const response = await apiFetch("/api/analyze", {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ payload: value.trim(), source, resolveRedirects, expectedLabel: expectedLabel || null }),
       });
@@ -144,24 +163,55 @@ export default function Home() {
 
   async function addIndicator(event: FormEvent) {
     event.preventDefault(); if (!iocDraft.indicator.trim()) return;
-    const response = await fetch(`${API_URL}/api/iocs`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(iocDraft) });
+    const response = await apiFetch("/api/iocs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(iocDraft) });
     const body = await response.json(); if (!response.ok) { setMessage(body.error || "IoC could not be saved."); return; }
     setIocDraft({ ...iocDraft, indicator: "" }); await refresh();
   }
+
+  async function submitAuthentication(event: FormEvent) {
+    event.preventDefault(); setAuthMessage("");
+    if (authMode === "register" && authForm.password !== authForm.confirmPassword) { setAuthMessage("Passwords do not match."); return; }
+    setAuthBusy(true);
+    try {
+      const response = await apiFetch(`/api/auth/${authMode}`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: authForm.username, password: authForm.password }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Authentication failed.");
+      setUser(body.user); setAuthStatus("authenticated"); setView("dashboard");
+      setAuthForm({ username: "", password: "", confirmPassword: "" });
+    } catch (error) { setAuthMessage(error instanceof Error ? error.message : "Authentication failed."); }
+    finally { setAuthBusy(false); }
+  }
+
+  async function logout() {
+    await apiFetch("/api/auth/logout", { method: "POST" });
+    stopCamera(); setUser(null); setAuthStatus("guest"); setHistory([]); setStats(emptyStats); setIocs([]); setResult(null);
+  }
+
+  if (authStatus === "loading") return <AuthLoading />;
+  if (authStatus === "guest") return <AuthScreen mode={authMode} form={authForm} message={authMessage} busy={authBusy} onModeChange={(mode) => { setAuthMode(mode); setAuthMessage(""); }} onFormChange={setAuthForm} onSubmit={submitAuthentication} />;
 
   return (
     <main className="app-shell">
       <header className="topbar">
         <button className="brand" onClick={() => setView("scan")} aria-label="Open scanner"><span className="brand-mark"><span>Q</span></span><span><strong>QRBased</strong><small>Sentinel</small></span></button>
         <nav className="desktop-nav" aria-label="Main navigation">{navItems.map(([key, label]) => <button key={key} className={view === key ? "active" : ""} onClick={() => setView(key)}>{label}</button>)}</nav>
-        <div className={`service-state ${online ? "online" : "offline"}`}><span />{online ? "Protection active" : "API offline"}</div>
+        <div className="account-area"><div className={`service-state ${online ? "online" : "offline"}`}><span />{online ? "Protection active" : "API offline"}</div><button className="account-button" onClick={logout} title="Sign out"><span>{user?.username.slice(0, 1).toUpperCase()}</span><div><strong>{user?.username}</strong><small>{user?.role}</small></div><b>↪</b></button></div>
       </header>
+
+      {view === "dashboard" && <div className="page data-page dashboard-page">
+        <div className="page-title"><div><p className="eyebrow">SECURITY OVERVIEW</p><h1>Analytics dashboard</h1><p>Monitor scan activity, risk classifications, and system performance from one view.</p></div><button className="primary-action" onClick={() => setView("scan")}>Scan a QR code</button></div>
+        <div className="dashboard-kpis"><Metric label="Total scans" value={stats.total} /><Metric label="Safe rate" value={percentage(stats.safe, stats.total)} tone="safe" /><Metric label="Suspicious" value={stats.suspicious} tone="suspicious" /><Metric label="Malicious" value={stats.malicious} tone="malicious" /><Metric label="Average latency" value={`${stats.meanLatencyMs.toFixed(0)} ms`} /><Metric label="P95 latency" value={`${stats.p95LatencyMs.toFixed(0)} ms`} /></div>
+        <div className="dashboard-grid"><section className="panel analytics-panel"><div className="panel-title"><div><p className="eyebrow">RISK DISTRIBUTION</p><h2>Classification overview</h2></div></div><div className="distribution-list"><div><span><b>Safe</b><small>{stats.safe} scans</small></span><i><em className="safe" style={{ width: percentage(stats.safe, stats.total) }} /></i><strong>{percentage(stats.safe, stats.total)}</strong></div><div><span><b>Suspicious</b><small>{stats.suspicious} scans</small></span><i><em className="suspicious" style={{ width: percentage(stats.suspicious, stats.total) }} /></i><strong>{percentage(stats.suspicious, stats.total)}</strong></div><div><span><b>Malicious</b><small>{stats.malicious} scans</small></span><i><em className="malicious" style={{ width: percentage(stats.malicious, stats.total) }} /></i><strong>{percentage(stats.malicious, stats.total)}</strong></div></div></section><section className="panel recent-panel"><div className="panel-title"><div><p className="eyebrow">RECENT ACTIVITY</p><h2>Latest scans</h2></div><button onClick={() => setView("history")}>View all</button></div><div className="recent-list">{history.slice(0, 5).map((scan) => <button key={scan.id} onClick={() => { setResult(scan); setView("scan"); }}><StatusPill value={scan.classification} /><span><strong>{scan.domain || shortText(scan.payloadPreview, 34)}</strong><small>{new Date(scan.createdAt).toLocaleString()}</small></span><b>{scan.riskScore}</b></button>)}{!history.length && <p>No scan activity yet.</p>}</div></section></div>
+      </div>}
 
       {view === "scan" && <div className="page scanner-page">
         <section className="intro-row"><div><p className="eyebrow">SCAN-TIME PAYMENT DEFENSE</p><h1>Know what’s behind<br />the code <em>before</em> you pay.</h1><p className="lead">Decode, inspect, and risk-score QR payment payloads without opening their destination.</p></div><div className="privacy-note"><span className="lock-dot">◆</span><div><strong>Privacy-first analysis</strong><small>No credentials. No payments. Suspicious links stay closed.</small></div></div></section>
         <section className="scanner-grid">
           <div className="scan-card">
-            <div className="card-heading"><div><span className="step">01</span><h2>Capture a QR code</h2></div><span className="local-chip">Local prototype</span></div>
+            <div className="card-heading"><div><span className="step">01</span><h2>Capture a QR code</h2></div><span className="local-chip">Local scanner</span></div>
             <div className={`camera-stage ${cameraOn ? "live" : ""}`}><video ref={videoRef} muted playsInline />{!cameraOn && <div className="camera-empty"><div className="scan-symbol"><i /><i /><i /><i /><span /></div><strong>Ready to inspect</strong><p>Position a payment QR inside the frame or upload a clear image.</p></div>}<div className="scan-corners"><i /><i /><i /><i /></div>{cameraOn && <div className="scan-line" />}</div>
             <canvas ref={canvasRef} className="hidden-canvas" />
             <div className="capture-actions"><button className="primary-action" onClick={cameraOn ? stopCamera : startCamera}>{cameraOn ? "Stop camera" : "Open camera"}</button><label className="secondary-action">Upload image<input type="file" accept="image/*" onChange={handleImage} /></label></div>
@@ -192,23 +242,32 @@ export default function Home() {
         <div className="table-card"><div className="table-head"><span>Result</span><span>Payload / destination</span><span>Indicators</span><span>Latency</span><span>Analyzed</span></div>{history.length ? history.map((scan) => <button className="history-row" key={scan.id} onClick={() => { setResult(scan); setView("scan"); }}><span><StatusPill value={scan.classification} /><b>{scan.riskScore}/100</b></span><span><strong>{scan.domain || shortText(scan.payloadPreview)}</strong><small>{scan.payloadType.replaceAll("_", " ")}</small></span><span>{scan.indicators.length}</span><span>{scan.latencyMs.toFixed(0)} ms</span><span>{new Date(scan.createdAt).toLocaleString()}</span></button>) : <div className="empty-table">No scans recorded yet. Analyze a controlled sample to begin.</div>}</div>
       </div>}
 
-      {view === "research" && <div className="page data-page">
-        <div className="page-title"><div><p className="eyebrow">STUDY EVALUATION</p><h1>Research metrics</h1><p>Live measurements aligned with the technical evaluation sheet in Chapter Three.</p></div><span className="research-badge">SQLite dataset · local</span></div>
-        <div className="metric-grid"><Metric label="Accuracy" value={percent(stats.evaluation.accuracy)} /><Metric label="Precision" value={percent(stats.evaluation.precision)} /><Metric label="Recall" value={percent(stats.evaluation.recall)} /><Metric label="F1-score" value={percent(stats.evaluation.f1)} /><Metric label="Mean latency" value={`${stats.meanLatencyMs.toFixed(1)} ms`} /><Metric label="P95 latency" value={`${stats.p95LatencyMs.toFixed(1)} ms`} /></div>
-        <div className="research-grid"><section className="panel"><div className="panel-title"><div><p className="eyebrow">CONFUSION MATRIX</p><h2>{stats.evaluation.sampleSize} labeled samples</h2></div></div><div className="matrix"><div /><span>Predicted risk</span><span>Predicted safe</span><b>Actual risk</b><strong>{stats.evaluation.tp}<small>True positive</small></strong><strong>{stats.evaluation.fn}<small>False negative</small></strong><b>Actual safe</b><strong>{stats.evaluation.fp}<small>False positive</small></strong><strong>{stats.evaluation.tn}<small>True negative</small></strong></div><p className="panel-note">Suspicious and Malicious are treated as positive-risk classes for this prototype evaluation.</p></section><section className="panel"><div className="panel-title"><div><p className="eyebrow">DECISION THRESHOLDS</p><h2>Explainable scoring</h2></div></div><div className="threshold"><span>0–39</span><b>Safe</b><i className="bar safe" /></div><div className="threshold"><span>40–69</span><b>Suspicious</b><i className="bar suspicious" /></div><div className="threshold"><span>70–100</span><b>Malicious</b><i className="bar malicious" /></div><p className="panel-note">Scores are additive, capped at 100, and retain every contributing indicator as evidence.</p></section></div>
-        <section className="panel architecture"><div className="panel-title"><div><p className="eyebrow">FRAMEWORK PIPELINE</p><h2>One decision, four evidence layers</h2></div></div><div className="architecture-flow"><div><span>01</span><strong>Payload decoder</strong><small>URL · deep link · EMV TLV</small></div><b>→</b><div><span>02</span><strong>Context validation</strong><small>Merchant · CRC · structure</small></div><b>→</b><div><span>03</span><strong>CTI enrichment</strong><small>Domain · URL · IP · redirect</small></div><b>→</b><div><span>04</span><strong>Risk decision</strong><small>Score · label · explanation</small></div></div></section>
-      </div>}
-
       {view === "intel" && <div className="page data-page">
         <div className="page-title"><div><p className="eyebrow">LOCAL CTI STORE</p><h1>Threat intelligence</h1><p>Add controlled research indicators. Matches contribute to the risk score without opening the destination.</p></div><span className="research-badge">{iocs.filter((item) => item.active).length} active IoCs</span></div>
         <div className="intel-grid"><form className="panel ioc-form" onSubmit={addIndicator}><div className="panel-title"><div><p className="eyebrow">NEW INDICATOR</p><h2>Add to local intelligence</h2></div></div><label>Indicator<input value={iocDraft.indicator} onChange={(event) => setIocDraft({ ...iocDraft, indicator: event.target.value })} placeholder="domain.example or full URL" /></label><div className="form-row"><label>Type<select value={iocDraft.indicatorType} onChange={(event) => setIocDraft({ ...iocDraft, indicatorType: event.target.value })}><option value="domain">Domain</option><option value="url">URL</option><option value="ip">IP address</option></select></label><label>Severity<select value={iocDraft.severity} onChange={(event) => setIocDraft({ ...iocDraft, severity: event.target.value })}><option>critical</option><option>high</option><option>medium</option></select></label></div><label>Source<input value={iocDraft.source} onChange={(event) => setIocDraft({ ...iocDraft, source: event.target.value })} /></label><button className="analyze-button">Save indicator<span>＋</span></button></form><section className="panel"><div className="panel-title"><div><p className="eyebrow">ACTIVE FEED</p><h2>Indicators of Compromise</h2></div></div><div className="ioc-list">{iocs.map((ioc) => <article key={ioc.id}><span className={`severity-dot ${ioc.severity}`} /><div><strong>{ioc.indicator}</strong><small>{ioc.indicator_type} · {ioc.source}</small></div><b>{ioc.confidence}%</b></article>)}</div></section></div>
       </div>}
 
-      <nav className="mobile-nav" aria-label="Mobile navigation">{navItems.map(([key, label]) => <button key={key} className={view === key ? "active" : ""} onClick={() => setView(key)}><span>{key === "scan" ? "⌁" : key === "history" ? "◷" : key === "research" ? "▥" : "◇"}</span>{label.split(" ")[0]}</button>)}</nav>
-      <footer><span>QRBased Sentinel · Research prototype</span><span>No financial transactions are processed.</span></footer>
+      <nav className="mobile-nav" aria-label="Mobile navigation">{navItems.map(([key, label]) => <button key={key} className={view === key ? "active" : ""} onClick={() => setView(key)}><span>{key === "dashboard" ? "▦" : key === "scan" ? "⌁" : key === "history" ? "◷" : "◇"}</span>{label.split(" ")[0]}</button>)}</nav>
+      <footer><span>QRBased Sentinel · Payment QR security</span><span>No financial transactions are processed.</span></footer>
     </main>
   );
 }
 
 function StatusPill({ value }: { value: Classification }) { return <span className={`status-pill ${value.toLowerCase()}`}><i />{value}</span>; }
 function Metric({ label, value, tone = "" }: { label: string; value: string | number; tone?: string }) { return <div className={`metric-card ${tone}`}><span>{label}</span><strong>{value}</strong></div>; }
+
+function AuthLoading() {
+  return <main className="auth-shell"><div className="auth-loading" role="status"><span className="brand-mark"><span>Q</span></span><strong>QRBased Sentinel</strong><small>Checking your session…</small></div></main>;
+}
+
+function AuthScreen({ mode, form, message, busy, onModeChange, onFormChange, onSubmit }: {
+  mode: "login" | "register";
+  form: { username: string; password: string; confirmPassword: string };
+  message: string;
+  busy: boolean;
+  onModeChange: (mode: "login" | "register") => void;
+  onFormChange: (form: { username: string; password: string; confirmPassword: string }) => void;
+  onSubmit: (event: FormEvent) => void;
+}) {
+  return <main className="auth-shell"><section className="auth-card"><div className="auth-intro"><div className="auth-brand"><span className="brand-mark"><span>Q</span></span><span><strong>QRBased</strong><small>Sentinel</small></span></div><p className="eyebrow">PAYMENT QR SECURITY</p><h1>Scan with confidence.</h1><p>Inspect QR payment payloads, review risk signals, and monitor scan activity from a protected workspace.</p><div className="auth-features"><span>◆ Explainable risk scoring</span><span>◆ QR image and camera scanning</span><span>◆ Local threat-intelligence matching</span></div></div><form className="auth-form" onSubmit={onSubmit}><div className="auth-tabs"><button type="button" className={mode === "login" ? "active" : ""} onClick={() => onModeChange("login")}>Sign in</button><button type="button" className={mode === "register" ? "active" : ""} onClick={() => onModeChange("register")}>Register</button></div><div><p className="eyebrow">{mode === "login" ? "WELCOME BACK" : "CREATE AN ACCOUNT"}</p><h2>{mode === "login" ? "Sign in to continue" : "Set up your access"}</h2><p>{mode === "login" ? "Use your account credentials to open the dashboard." : "Choose a username and a password with at least eight characters."}</p></div><label>Username<input autoComplete="username" required minLength={3} maxLength={32} value={form.username} onChange={(event) => onFormChange({ ...form, username: event.target.value })} placeholder="Enter username" /></label><label>Password<input type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} required minLength={8} maxLength={128} value={form.password} onChange={(event) => onFormChange({ ...form, password: event.target.value })} placeholder="Enter password" /></label>{mode === "register" && <label>Confirm password<input type="password" autoComplete="new-password" required minLength={8} maxLength={128} value={form.confirmPassword} onChange={(event) => onFormChange({ ...form, confirmPassword: event.target.value })} placeholder="Repeat password" /></label>}<button className="analyze-button" disabled={busy}>{busy ? "Please wait…" : mode === "login" ? "Sign in" : "Create account"}<span>→</span></button>{message && <p className="form-message" role="alert">{message}</p>}<small className="auth-note">Administrator username: <b>qradmin</b></small></form></section></main>;
+}

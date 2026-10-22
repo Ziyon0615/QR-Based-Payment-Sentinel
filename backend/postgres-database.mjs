@@ -18,31 +18,6 @@ if (!globalStore[globalKey]) {
 }
 
 const pool = globalStore[globalKey];
-const analyticsSchemaKey = Symbol.for("qr-sentinel.analytics-schema");
-
-async function ensureAnalyticsSchema() {
-  if (!globalStore[analyticsSchemaKey]) {
-    globalStore[analyticsSchemaKey] = pool.query(`
-      ALTER TABLE scans ADD COLUMN IF NOT EXISTS user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
-      DO $$ BEGIN
-        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'scans_user_id_fkey') THEN
-          ALTER TABLE scans ADD CONSTRAINT scans_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL;
-        END IF;
-      END $$;
-      CREATE INDEX IF NOT EXISTS idx_scans_user_created_at ON scans(user_id, created_at DESC);
-      CREATE TABLE IF NOT EXISTS audit_logs (
-        id TEXT PRIMARY KEY,
-        user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
-        action TEXT NOT NULL,
-        detail_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-        created_at TIMESTAMPTZ NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_audit_logs_user_created_at ON audit_logs(user_id, created_at DESC);
-    `);
-  }
-  await globalStore[analyticsSchemaKey];
-}
 
 function passwordHash(password, salt) {
   return scryptSync(password, salt, 64).toString("hex");
@@ -180,7 +155,6 @@ export async function findIocMatches({ urls = [], domains = [], ips = [] }) {
 }
 
 export async function saveScan(result, input) {
-  await ensureAnalyticsSchema();
   const id = randomUUID();
   const createdAt = new Date().toISOString();
   await pool.query(`
@@ -201,7 +175,6 @@ export async function saveScan(result, input) {
 }
 
 export async function listScans(limit = 30, userId = null) {
-  await ensureAnalyticsSchema();
   const safeLimit = Math.min(Math.max(Number(limit) || 30, 1), 200);
   const result = userId
     ? await pool.query(`SELECT scans.*, users.username FROM scans LEFT JOIN users ON users.id = scans.user_id WHERE scans.user_id = $1 ORDER BY scans.created_at DESC LIMIT $2`, [userId, safeLimit])
@@ -238,7 +211,6 @@ export async function addIoc(input) {
 }
 
 export async function getStats(userId = null) {
-  await ensureAnalyticsSchema();
   const where = userId ? " WHERE user_id = $1" : "";
   const parameters = userId ? [userId] : [];
   const [summaryResult, latenciesResult, labeledResult] = await Promise.all([
@@ -324,14 +296,12 @@ export async function getStats(userId = null) {
 }
 
 export async function logActivity(userId, action, detail = {}) {
-  await ensureAnalyticsSchema();
   const activity = { id: randomUUID(), userId: userId || null, action, detail, createdAt: new Date().toISOString() };
   await pool.query("INSERT INTO audit_logs (id, user_id, action, detail_json, created_at) VALUES ($1, $2, $3, $4::jsonb, $5)", [activity.id, activity.userId, activity.action, JSON.stringify(activity.detail), activity.createdAt]);
   return activity;
 }
 
 export async function listActivity(limit = 100, userId = null) {
-  await ensureAnalyticsSchema();
   const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 300);
   const result = userId
     ? await pool.query(`SELECT audit_logs.*, users.username, users.role FROM audit_logs LEFT JOIN users ON users.id = audit_logs.user_id WHERE audit_logs.user_id = $1 ORDER BY audit_logs.created_at DESC LIMIT $2`, [userId, safeLimit])
@@ -348,7 +318,6 @@ export async function listActivity(limit = 100, userId = null) {
 }
 
 export async function listUsers() {
-  await ensureAnalyticsSchema();
   const result = await pool.query(`
     SELECT users.id, users.username, users.email, users.role, users.created_at,
       COUNT(scans.id)::int scan_count,

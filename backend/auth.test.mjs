@@ -116,12 +116,17 @@ test("protects application data and supports login, registration, and logout", a
   assert.equal(selectedUserActivity.status, 200);
   assert.ok((await selectedUserActivity.json()).activity.every((item) => item.userId === registrationBody.user.id));
 
-  const forbiddenIndicator = await fetch(`${api.baseUrl}/api/iocs`, {
+  const userIndicator = await fetch(`${api.baseUrl}/api/iocs`, {
     method: "POST",
     headers: { "content-type": "application/json", cookie: userCookie },
-    body: JSON.stringify({ indicator: "blocked.example", indicatorType: "domain" }),
+    body: JSON.stringify({ indicator: "reported.example", indicatorType: "domain", severity: "high", source: "User report" }),
   });
-  assert.equal(forbiddenIndicator.status, 403);
+  assert.equal(userIndicator.status, 201);
+  assert.equal((await userIndicator.json()).ioc.indicator, "reported.example");
+
+  const activityAfterIndicator = await fetch(`${api.baseUrl}/api/activity`, { headers: { cookie: userCookie } });
+  assert.equal(activityAfterIndicator.status, 200);
+  assert.ok((await activityAfterIndicator.json()).activity.some((item) => item.action === "indicator_added"));
 
   const duplicate = await fetch(`${api.baseUrl}/api/auth/register`, {
     method: "POST",

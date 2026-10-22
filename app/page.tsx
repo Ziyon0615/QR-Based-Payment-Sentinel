@@ -65,6 +65,8 @@ export default function Home() {
   const [resolveRedirects, setResolveRedirects] = useState(true);
   const [expectedLabel, setExpectedLabel] = useState("");
   const [iocDraft, setIocDraft] = useState({ indicator: "", indicatorType: "domain", severity: "high", source: "Manual research entry" });
+  const [iocBusy, setIocBusy] = useState(false);
+  const [iocMessage, setIocMessage] = useState("");
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -80,7 +82,7 @@ export default function Home() {
         apiFetch("/api/scans?limit=50"),
         apiFetch("/api/stats"),
         apiFetch(activityPath),
-        isAdmin ? apiFetch("/api/iocs") : Promise.resolve(null),
+        apiFetch("/api/iocs"),
         isAdmin ? apiFetch("/api/users") : Promise.resolve(null),
       ]);
       setOnline(healthResponse.ok);
@@ -190,9 +192,14 @@ export default function Home() {
 
   async function addIndicator(event: FormEvent) {
     event.preventDefault(); if (!iocDraft.indicator.trim()) return;
-    const response = await apiFetch("/api/iocs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(iocDraft) });
-    const body = await response.json(); if (!response.ok) { setMessage(body.error || "IoC could not be saved."); return; }
-    setIocDraft({ ...iocDraft, indicator: "" }); await refresh();
+    setIocBusy(true); setIocMessage("");
+    try {
+      const response = await apiFetch("/api/iocs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...iocDraft, indicator: iocDraft.indicator.trim() }) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "IoC could not be saved.");
+      setIocDraft({ ...iocDraft, indicator: "" }); setIocMessage("Threat indicator saved."); await refresh();
+    } catch (error) { setIocMessage(error instanceof Error ? error.message : "IoC could not be saved."); }
+    finally { setIocBusy(false); }
   }
 
   async function submitAuthentication(event: FormEvent) {
@@ -218,12 +225,12 @@ export default function Home() {
 
   async function logout() {
     await apiFetch("/api/auth/logout", { method: "POST" });
-    stopCamera(); setUser(null); setAuthStatus("guest"); setHistory([]); setStats(emptyStats); setIocs([]); setUsers([]); setActivity([]); setSelectedUserId(null); setResult(null);
+    stopCamera(); setUser(null); setAuthStatus("guest"); setHistory([]); setStats(emptyStats); setIocs([]); setUsers([]); setActivity([]); setSelectedUserId(null); setResult(null); setIocMessage("");
   }
 
   if (authStatus === "loading") return <AuthLoading />;
   if (authStatus === "guest") return <AuthScreen mode={authMode} form={authForm} message={authMessage} busy={authBusy} onModeChange={(mode) => { setAuthMode(mode); setAuthMessage(""); }} onFormChange={setAuthForm} onSubmit={submitAuthentication} />;
-  const visibleNavItems = user?.role === "admin" ? navItems : navItems.filter(([key]) => key !== "intel");
+  const visibleNavItems = navItems;
 
   return (
     <main className="app-shell">
@@ -270,12 +277,12 @@ export default function Home() {
         <div className="table-card"><div className="table-head"><span>Result</span><span>Payload / destination</span><span>Indicators</span><span>Latency</span><span>Analyzed</span></div>{history.length ? history.map((scan) => <button className="history-row" key={scan.id} onClick={() => { setResult(scan); setView("scan"); }}><span><StatusPill value={scan.classification} /><b>{scan.riskScore}/100</b></span><span><strong>{scan.domain || shortText(scan.payloadPreview)}</strong><small>{scan.username ? `${scan.username} · ` : ""}{scan.payloadType.replaceAll("_", " ")}</small></span><span>{scan.indicators.length}</span><span>{scan.latencyMs.toFixed(0)} ms</span><span>{new Date(scan.createdAt).toLocaleString()}</span></button>) : <div className="empty-table">No scans recorded yet. Analyze a controlled sample to begin.</div>}</div>
       </div>}
 
-      {view === "intel" && user?.role === "admin" && <div className="page data-page">
+      {view === "intel" && <div className="page data-page">
         <div className="page-title"><div><p className="eyebrow">LOCAL CTI STORE</p><h1>Threat intelligence</h1><p>Add controlled research indicators. Matches contribute to the risk score without opening the destination.</p></div><span className="research-badge">{iocs.filter((item) => item.active).length} active IoCs</span></div>
-        <div className="intel-grid"><form className="panel ioc-form" onSubmit={addIndicator}><div className="panel-title"><div><p className="eyebrow">NEW INDICATOR</p><h2>Add to local intelligence</h2></div></div><label>Indicator<input value={iocDraft.indicator} onChange={(event) => setIocDraft({ ...iocDraft, indicator: event.target.value })} placeholder="domain.example or full URL" /></label><div className="form-row"><label>Type<select value={iocDraft.indicatorType} onChange={(event) => setIocDraft({ ...iocDraft, indicatorType: event.target.value })}><option value="domain">Domain</option><option value="url">URL</option><option value="ip">IP address</option></select></label><label>Severity<select value={iocDraft.severity} onChange={(event) => setIocDraft({ ...iocDraft, severity: event.target.value })}><option>critical</option><option>high</option><option>medium</option></select></label></div><label>Source<input value={iocDraft.source} onChange={(event) => setIocDraft({ ...iocDraft, source: event.target.value })} /></label><button className="analyze-button">Save indicator<span>＋</span></button></form><section className="panel"><div className="panel-title"><div><p className="eyebrow">ACTIVE FEED</p><h2>Indicators of Compromise</h2></div></div><div className="ioc-list">{iocs.map((ioc) => <article key={ioc.id}><span className={`severity-dot ${ioc.severity}`} /><div><strong>{ioc.indicator}</strong><small>{ioc.indicator_type} · {ioc.source}</small></div><b>{ioc.confidence}%</b></article>)}</div></section></div>
+        <div className="intel-grid"><form className="panel ioc-form" onSubmit={addIndicator}><div className="panel-title"><div><p className="eyebrow">NEW INDICATOR</p><h2>Add to local intelligence</h2></div></div><label>Indicator<input required maxLength={2048} value={iocDraft.indicator} onChange={(event) => setIocDraft({ ...iocDraft, indicator: event.target.value })} placeholder="domain.example, full URL, or IP address" /></label><div className="form-row"><label>Type<select value={iocDraft.indicatorType} onChange={(event) => setIocDraft({ ...iocDraft, indicatorType: event.target.value })}><option value="domain">Domain</option><option value="url">URL</option><option value="ip">IP address</option></select></label><label>Severity<select value={iocDraft.severity} onChange={(event) => setIocDraft({ ...iocDraft, severity: event.target.value })}><option>critical</option><option>high</option><option>medium</option></select></label></div><label>Source<input required maxLength={160} value={iocDraft.source} onChange={(event) => setIocDraft({ ...iocDraft, source: event.target.value })} /></label><button className="analyze-button" disabled={iocBusy}>{iocBusy ? "Saving…" : "Save indicator"}<span>＋</span></button>{iocMessage && <p className="form-message" role="status">{iocMessage}</p>}</form><section className="panel"><div className="panel-title"><div><p className="eyebrow">ACTIVE FEED</p><h2>Indicators of Compromise</h2></div></div><div className="ioc-list">{iocs.map((ioc) => <article key={ioc.id}><span className={`severity-dot ${ioc.severity}`} /><div><strong>{ioc.indicator}</strong><small>{ioc.indicator_type} · {ioc.source}</small></div><b>{ioc.confidence}%</b></article>)}</div></section></div>
       </div>}
 
-      <nav className={`mobile-nav ${visibleNavItems.length === 3 ? "three-items" : ""}`} aria-label="Mobile navigation">{visibleNavItems.map(([key, label]) => <button key={key} className={view === key ? "active" : ""} onClick={() => setView(key)}><span>{key === "dashboard" ? "▦" : key === "scan" ? "⌁" : key === "history" ? "◷" : "◇"}</span>{label.split(" ")[0]}</button>)}</nav>
+      <nav className="mobile-nav" aria-label="Mobile navigation">{visibleNavItems.map(([key, label]) => <button key={key} className={view === key ? "active" : ""} onClick={() => setView(key)}><span>{key === "dashboard" ? "▦" : key === "scan" ? "⌁" : key === "history" ? "◷" : "◇"}</span>{label.split(" ")[0]}</button>)}</nav>
       <footer><span>QRBased Sentinel · Payment QR security</span><span>No financial transactions are processed.</span></footer>
     </main>
   );

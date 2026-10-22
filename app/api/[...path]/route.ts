@@ -125,7 +125,6 @@ async function handle(request: Request) {
     }
     if (request.method === "GET" && url.pathname === "/api/iocs") return json(200, { iocs: await listIocs() });
     if (request.method === "POST" && url.pathname === "/api/iocs") {
-      if (user.role !== "admin") return json(403, { error: "Administrator access required." });
       const input = await readJson(request);
       if (!input.indicator || !["url", "domain", "ip"].includes(input.indicatorType)) return json(400, { error: "indicator and a valid indicatorType are required" });
       const ioc = await addIoc(input);

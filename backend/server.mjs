@@ -131,7 +131,6 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && url.pathname === "/api/iocs") return send(request, response, 200, { iocs: await listIocs() });
     if (request.method === "POST" && url.pathname === "/api/iocs") {
-      if (user.role !== "admin") return send(request, response, 403, { error: "Administrator access required." });
       const input = await readJson(request);
       if (!input.indicator || !["url", "domain", "ip"].includes(input.indicatorType)) return send(request, response, 400, { error: "indicator and a valid indicatorType are required" });
       const ioc = await addIoc(input);

@@ -129,7 +129,7 @@ async function handle(request: Request) {
     if (request.method === "POST" && url.pathname === "/api/iocs") {
       const input = await readJson(request);
       if (!input.indicator || !["url", "domain", "ip"].includes(input.indicatorType)) return json(400, { error: "indicator and a valid indicatorType are required" });
-      const ioc = await addIoc({ ...input, active: user.role === "admin", confidence: user.role === "admin" ? (input.confidence ?? 100) : 80 });
+      const ioc = await addIoc({ ...input, active: user.role === "admin", confidence: user.role === "admin" ? (input.confidence ?? 100) : 80, submittedByUserId: user.id });
       const pendingReview = user.role !== "admin" && !ioc.active;
       const alreadyActive = user.role !== "admin" && Boolean(ioc.active);
       await logActivity(user.id, alreadyActive ? "indicator_duplicate" : pendingReview ? "indicator_submitted" : "indicator_added", { indicatorType: input.indicatorType, indicator: input.indicator });

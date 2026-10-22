@@ -542,6 +542,7 @@ textarea:focus, input:focus, select:focus { outline: 3px solid rgba(41,169,130,.
 .ioc-list strong, .ioc-list small { display: block; }
 .ioc-list strong { font: 11px ui-monospace, monospace; overflow-wrap: anywhere; }
 .ioc-list small { color: var(--muted); margin-top: 4px; font-size: 8px; }
+.ioc-list .ioc-contributor { color: var(--green-deep); font-weight: 750; }
 .ioc-list b { color: var(--muted); font-size: 9px; }
 .ioc-actions { display: flex; gap: 7px; }
 .ioc-delete, .ioc-approve, .ioc-reject { border: 0; border-radius: 9px; padding: 8px 10px; font-size: 8px; font-weight: 850; cursor: pointer; }

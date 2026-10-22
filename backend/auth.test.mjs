@@ -68,6 +68,7 @@ test("protects application data and supports login, registration, and logout", a
   const adminIndicatorBody = await adminIndicator.json();
   assert.equal(Boolean(adminIndicatorBody.ioc.active), true);
   assert.equal(adminIndicatorBody.ioc.confidence, 100);
+  assert.equal(adminIndicatorBody.ioc.contributor_username, "qradmin");
 
   const registration = await fetch(`${api.baseUrl}/api/auth/register`, {
     method: "POST",
@@ -137,6 +138,7 @@ test("protects application data and supports login, registration, and logout", a
   assert.equal(userIndicatorBody.pendingReview, true);
   assert.equal(Boolean(userIndicatorBody.ioc.active), false);
   assert.equal(userIndicatorBody.ioc.confidence, 80);
+  assert.equal(userIndicatorBody.ioc.contributor_username, "new_user");
 
   const activityAfterIndicator = await fetch(`${api.baseUrl}/api/activity`, { headers: { cookie: userCookie } });
   assert.equal(activityAfterIndicator.status, 200);
@@ -156,7 +158,7 @@ test("protects application data and supports login, registration, and logout", a
 
   const adminPendingIndicators = await fetch(`${api.baseUrl}/api/iocs`, { headers: { cookie: adminCookie } });
   assert.equal(adminPendingIndicators.status, 200);
-  assert.ok((await adminPendingIndicators.json()).iocs.some((item) => item.id === userIndicatorBody.ioc.id && !item.active));
+  assert.ok((await adminPendingIndicators.json()).iocs.some((item) => item.id === userIndicatorBody.ioc.id && !item.active && item.contributor_username === "new_user"));
 
   const forbiddenReview = await fetch(`${api.baseUrl}/api/iocs/${userIndicatorBody.ioc.id}`, {
     method: "PATCH",
@@ -175,7 +177,7 @@ test("protects application data and supports login, registration, and logout", a
 
   const userIndicatorsAfterApproval = await fetch(`${api.baseUrl}/api/iocs`, { headers: { cookie: userCookie } });
   assert.equal(userIndicatorsAfterApproval.status, 200);
-  assert.ok((await userIndicatorsAfterApproval.json()).iocs.some((item) => item.id === userIndicatorBody.ioc.id));
+  assert.ok((await userIndicatorsAfterApproval.json()).iocs.some((item) => item.id === userIndicatorBody.ioc.id && item.contributor_username === "new_user"));
 
   const scanAfterApproval = await fetch(`${api.baseUrl}/api/analyze`, {
     method: "POST",
@@ -198,6 +200,7 @@ test("protects application data and supports login, registration, and logout", a
   const protectedApprovedIndicator = (await protectedApprovedIndicators.json()).iocs.find((item) => item.id === userIndicatorBody.ioc.id);
   assert.equal(protectedApprovedIndicator.severity, "high");
   assert.equal(protectedApprovedIndicator.source, "User report");
+  assert.equal(protectedApprovedIndicator.contributor_username, "new_user");
 
   const forbiddenDelete = await fetch(`${api.baseUrl}/api/iocs/${userIndicatorBody.ioc.id}`, {
     method: "DELETE",

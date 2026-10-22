@@ -183,7 +183,12 @@ export async function listScans(limit = 30, userId = null) {
 }
 
 export async function listIocs(activeOnly = false) {
-  const result = await pool.query(`SELECT * FROM iocs${activeOnly ? " WHERE active = TRUE" : ""} ORDER BY last_seen DESC, indicator ASC`);
+  const result = await pool.query(`
+    SELECT iocs.*, users.username contributor_username
+    FROM iocs LEFT JOIN users ON users.id = iocs.submitted_by_user_id
+    ${activeOnly ? "WHERE iocs.active = TRUE" : ""}
+    ORDER BY iocs.last_seen DESC, iocs.indicator ASC
+  `);
   return result.rows;
 }
 
@@ -191,13 +196,14 @@ export async function addIoc(input) {
   const timestamp = new Date().toISOString();
   const id = randomUUID();
   const result = await pool.query(`
-    INSERT INTO iocs (id, indicator, indicator_type, severity, confidence, source, notes, active, first_seen, last_seen, expires_at)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10)
+    INSERT INTO iocs (id, indicator, indicator_type, severity, confidence, source, notes, active, first_seen, last_seen, expires_at, submitted_by_user_id)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10, $11)
     ON CONFLICT (indicator_type, (lower(indicator))) DO UPDATE SET
       severity = CASE WHEN iocs.active AND NOT EXCLUDED.active THEN iocs.severity ELSE EXCLUDED.severity END,
       confidence = CASE WHEN iocs.active AND NOT EXCLUDED.active THEN iocs.confidence ELSE EXCLUDED.confidence END,
       source = CASE WHEN iocs.active AND NOT EXCLUDED.active THEN iocs.source ELSE EXCLUDED.source END,
       notes = CASE WHEN iocs.active AND NOT EXCLUDED.active THEN iocs.notes ELSE EXCLUDED.notes END,
+      submitted_by_user_id = COALESCE(iocs.submitted_by_user_id, EXCLUDED.submitted_by_user_id),
       active = iocs.active OR EXCLUDED.active,
       last_seen = EXCLUDED.last_seen,
       expires_at = CASE WHEN iocs.active AND NOT EXCLUDED.active THEN iocs.expires_at ELSE EXCLUDED.expires_at END
@@ -205,9 +211,14 @@ export async function addIoc(input) {
   `, [
     id, input.indicator.trim(), input.indicatorType, input.severity || "high",
     Number(input.confidence ?? 80), input.source || "Manual entry", input.notes || null,
-    Boolean(input.active), timestamp, input.expiresAt || null,
+    Boolean(input.active), timestamp, input.expiresAt || null, input.submittedByUserId || null,
   ]);
-  return result.rows[0];
+  const saved = await pool.query(`
+    SELECT iocs.*, users.username contributor_username
+    FROM iocs LEFT JOIN users ON users.id = iocs.submitted_by_user_id
+    WHERE iocs.id = $1
+  `, [result.rows[0].id]);
+  return saved.rows[0];
 }
 
 export async function deleteIoc(id) {

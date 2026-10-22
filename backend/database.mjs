@@ -43,6 +43,7 @@ db.exec(`
     first_seen TEXT NOT NULL,
     last_seen TEXT NOT NULL,
     expires_at TEXT,
+    submitted_by_user_id TEXT,
     UNIQUE(indicator, indicator_type)
   );
 
@@ -71,6 +72,12 @@ if (!userColumns.some((column) => column.name === "email")) {
   db.exec("ALTER TABLE users ADD COLUMN email TEXT COLLATE NOCASE");
 }
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL");
+
+const iocColumns = db.prepare("PRAGMA table_info(iocs)").all();
+if (!iocColumns.some((column) => column.name === "submitted_by_user_id")) {
+  db.exec("ALTER TABLE iocs ADD COLUMN submitted_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL");
+}
+db.exec("CREATE INDEX IF NOT EXISTS idx_iocs_submitted_by_user_id ON iocs(submitted_by_user_id)");
 
 const scanColumns = db.prepare("PRAGMA table_info(scans)").all();
 if (!scanColumns.some((column) => column.name === "user_id")) {
@@ -264,20 +271,26 @@ export function listScans(limit = 30, userId = null) {
 }
 
 export function listIocs(activeOnly = false) {
-  return db.prepare(`SELECT * FROM iocs${activeOnly ? " WHERE active = 1" : ""} ORDER BY last_seen DESC, indicator ASC`).all();
+  return db.prepare(`
+    SELECT iocs.*, users.username contributor_username
+    FROM iocs LEFT JOIN users ON users.id = iocs.submitted_by_user_id
+    ${activeOnly ? "WHERE iocs.active = 1" : ""}
+    ORDER BY iocs.last_seen DESC, iocs.indicator ASC
+  `).all();
 }
 
 export function addIoc(input) {
   const timestamp = new Date().toISOString();
   const id = randomUUID();
   db.prepare(`
-    INSERT INTO iocs (id, indicator, indicator_type, severity, confidence, source, notes, active, first_seen, last_seen, expires_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO iocs (id, indicator, indicator_type, severity, confidence, source, notes, active, first_seen, last_seen, expires_at, submitted_by_user_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(indicator, indicator_type) DO UPDATE SET
       severity = CASE WHEN iocs.active = 1 AND excluded.active = 0 THEN iocs.severity ELSE excluded.severity END,
       confidence = CASE WHEN iocs.active = 1 AND excluded.active = 0 THEN iocs.confidence ELSE excluded.confidence END,
       source = CASE WHEN iocs.active = 1 AND excluded.active = 0 THEN iocs.source ELSE excluded.source END,
       notes = CASE WHEN iocs.active = 1 AND excluded.active = 0 THEN iocs.notes ELSE excluded.notes END,
+      submitted_by_user_id = COALESCE(iocs.submitted_by_user_id, excluded.submitted_by_user_id),
       active = CASE WHEN iocs.active = 1 THEN 1 ELSE excluded.active END,
       last_seen = excluded.last_seen,
       expires_at = CASE WHEN iocs.active = 1 AND excluded.active = 0 THEN iocs.expires_at ELSE excluded.expires_at END
@@ -293,8 +306,13 @@ export function addIoc(input) {
     timestamp,
     timestamp,
     input.expiresAt || null,
+    input.submittedByUserId || null,
   );
-  return db.prepare("SELECT * FROM iocs WHERE indicator_type = ? AND lower(indicator) = lower(?)").get(input.indicatorType, input.indicator.trim());
+  return db.prepare(`
+    SELECT iocs.*, users.username contributor_username
+    FROM iocs LEFT JOIN users ON users.id = iocs.submitted_by_user_id
+    WHERE iocs.indicator_type = ? AND lower(iocs.indicator) = lower(?)
+  `).get(input.indicatorType, input.indicator.trim());
 }
 
 export function deleteIoc(id) {

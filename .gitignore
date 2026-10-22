@@ -4,4 +4,5 @@ node_modules/
 .env.local
 .wrangler/
 data/
+datasets/qr-evaluation/
 npm-debug.log*

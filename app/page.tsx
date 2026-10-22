@@ -3,7 +3,8 @@
 import { ChangeEvent, FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import jsQR from "jsqr";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_URL = process.env.NEXT_PUBLIC_API_URL
+  ?? (process.env.NODE_ENV === "development" ? "http://localhost:8000" : "");
 
 type Classification = "Safe" | "Suspicious" | "Malicious";
 type Indicator = { id: string; category: string; severity: string; score: number; title: string; detail: string; evidence: string };

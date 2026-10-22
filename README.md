@@ -6,12 +6,12 @@ QRBased Sentinel is a mobile-compatible research prototype for real-time detecti
 
 Requirements: Node.js 22.13 or newer.
 
-1. Copy `.env.example` to `.env.local` if you need to change the default ports.
+1. Copy `.env.example` to `.env.local`. Add `DATABASE_URL` to use Neon, or remove it to use the local SQLite fallback.
 2. Run `npm install`.
 3. Run `npm run dev`.
-4. Open `http://localhost:3000`. The local API runs on `http://localhost:8000`.
+4. Open `http://localhost:3000`. The Next.js app serves its API on the same origin. The standalone local API remains available through `npm run dev:api`.
 
-The SQLite database is created automatically at `data/qr-sentinel.db`. The `data/` directory is excluded from version control.
+Without `DATABASE_URL`, the SQLite database is created automatically at `data/qr-sentinel.db`. The `data/` directory is excluded from version control.
 
 ## Running the system again in VS Code
 
@@ -47,7 +47,7 @@ npm run dev
 - EMV TLV parsing, required-field checks, and CRC-16/CCITT validation
 - URL lexical, domain, parameter, URI-scheme, and redirect-chain indicators
 - Server-side redirect inspection with private/local network blocking and a five-hop limit
-- Local SQLite IoC store for domains, URLs, and IP addresses
+- Neon Postgres IoC store in production, with a local SQLite fallback
 - Explainable Safe (0-39), Suspicious (40-69), and Malicious (70-100) results
 - Scan history, latency summaries, confusion matrix, accuracy, precision, recall, F1, FPR, and FNR
 - Optional expected labels for controlled academic evaluation
@@ -56,9 +56,11 @@ npm run dev
 
 The application does not authorize or process payments, collect credentials, or automatically open scanned destinations. Use malicious samples only in controlled research conditions. Live redirect checks inspect HTTP response headers only and reject private or local network destinations.
 
-## Later deployment path
+## Vercel and Neon deployment
 
-The frontend is a standard Next.js application suitable for Vercel. The Node API can run on Render. For production, replace the SQLite repository in `backend/database.mjs` with a Neon Postgres repository while preserving the API contract. Set `NEXT_PUBLIC_API_URL` to the Render service URL and `ALLOWED_ORIGINS` to the Vercel domain.
+The Next.js deployment serves both the frontend and `/api/*` routes. Set the pooled Neon connection string as the Production `DATABASE_URL` secret in Vercel. Keep `NEXT_PUBLIC_API_URL` unset so browser requests remain same-origin and session cookies work reliably.
+
+The versioned schema is in `db/migrations/001_initial.sql`. Use a direct Neon connection for migrations; the running Vercel app should use Neon's pooled connection string.
 
 ## Validation
 

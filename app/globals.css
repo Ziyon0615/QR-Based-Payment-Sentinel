@@ -55,7 +55,27 @@ button, label { -webkit-tap-highlight-color: transparent; }
 .auth-form > div:nth-child(2) > p:last-child { margin-bottom: 27px; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .auth-form label { display: grid; gap: 8px; margin-bottom: 16px; color: var(--muted); font-size: 9px; font-weight: 850; }
 .auth-form input { width: 100%; height: 48px; padding: 0 14px; color: var(--ink); }
-.auth-note { margin-top: 18px; color: var(--muted); font-size: 9px; text-align: center; }
+.password-field { position: relative; display: block; }
+.password-field input { padding-right: 52px; }
+.password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 7px;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: #75847f;
+  cursor: pointer;
+}
+.password-toggle:hover { color: var(--green-deep); background: rgba(41,169,130,.08); }
+.password-toggle:focus-visible { outline: 3px solid rgba(41,169,130,.2); color: var(--green-deep); }
+.password-toggle svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.password-toggle[aria-pressed="true"] { color: var(--green); background: rgba(41,169,130,.1); }
 .auth-loading { display: grid; justify-items: center; gap: 10px; color: var(--muted); }
 .auth-loading strong { color: var(--ink); font-size: 16px; }
 .auth-loading small { font-size: 10px; }

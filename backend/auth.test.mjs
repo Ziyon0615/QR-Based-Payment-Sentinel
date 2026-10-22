@@ -59,6 +59,16 @@ test("protects application data and supports login, registration, and logout", a
   const authorized = await fetch(`${api.baseUrl}/api/scans`, { headers: { cookie: adminCookie } });
   assert.equal(authorized.status, 200);
 
+  const adminIndicator = await fetch(`${api.baseUrl}/api/iocs`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie: adminCookie },
+    body: JSON.stringify({ indicator: "admin-confirmed.example", indicatorType: "domain", severity: "high", source: "Administrator entry" }),
+  });
+  assert.equal(adminIndicator.status, 201);
+  const adminIndicatorBody = await adminIndicator.json();
+  assert.equal(Boolean(adminIndicatorBody.ioc.active), true);
+  assert.equal(adminIndicatorBody.ioc.confidence, 100);
+
   const registration = await fetch(`${api.baseUrl}/api/auth/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -119,15 +129,75 @@ test("protects application data and supports login, registration, and logout", a
   const userIndicator = await fetch(`${api.baseUrl}/api/iocs`, {
     method: "POST",
     headers: { "content-type": "application/json", cookie: userCookie },
-    body: JSON.stringify({ indicator: "reported.example", indicatorType: "domain", severity: "high", source: "User report" }),
+    body: JSON.stringify({ indicator: "reported.example", indicatorType: "domain", severity: "high", confidence: 100, source: "User report" }),
   });
   assert.equal(userIndicator.status, 201);
   const userIndicatorBody = await userIndicator.json();
   assert.equal(userIndicatorBody.ioc.indicator, "reported.example");
+  assert.equal(userIndicatorBody.pendingReview, true);
+  assert.equal(Boolean(userIndicatorBody.ioc.active), false);
+  assert.equal(userIndicatorBody.ioc.confidence, 80);
 
   const activityAfterIndicator = await fetch(`${api.baseUrl}/api/activity`, { headers: { cookie: userCookie } });
   assert.equal(activityAfterIndicator.status, 200);
-  assert.ok((await activityAfterIndicator.json()).activity.some((item) => item.action === "indicator_added"));
+  assert.ok((await activityAfterIndicator.json()).activity.some((item) => item.action === "indicator_submitted"));
+
+  const userIndicatorsBeforeApproval = await fetch(`${api.baseUrl}/api/iocs`, { headers: { cookie: userCookie } });
+  assert.equal(userIndicatorsBeforeApproval.status, 200);
+  assert.ok(!(await userIndicatorsBeforeApproval.json()).iocs.some((item) => item.id === userIndicatorBody.ioc.id));
+
+  const scanBeforeApproval = await fetch(`${api.baseUrl}/api/analyze`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie: userCookie },
+    body: JSON.stringify({ payload: "https://reported.example/pay", resolveRedirects: false, source: "test" }),
+  });
+  assert.equal(scanBeforeApproval.status, 201);
+  assert.ok(!(await scanBeforeApproval.json()).indicators.some((item) => item.category === "Threat intelligence"));
+
+  const adminPendingIndicators = await fetch(`${api.baseUrl}/api/iocs`, { headers: { cookie: adminCookie } });
+  assert.equal(adminPendingIndicators.status, 200);
+  assert.ok((await adminPendingIndicators.json()).iocs.some((item) => item.id === userIndicatorBody.ioc.id && !item.active));
+
+  const forbiddenReview = await fetch(`${api.baseUrl}/api/iocs/${userIndicatorBody.ioc.id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", cookie: userCookie },
+    body: JSON.stringify({ action: "approve" }),
+  });
+  assert.equal(forbiddenReview.status, 403);
+
+  const adminApproval = await fetch(`${api.baseUrl}/api/iocs/${userIndicatorBody.ioc.id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", cookie: adminCookie },
+    body: JSON.stringify({ action: "approve" }),
+  });
+  assert.equal(adminApproval.status, 200);
+  assert.equal(Boolean((await adminApproval.json()).ioc.active), true);
+
+  const userIndicatorsAfterApproval = await fetch(`${api.baseUrl}/api/iocs`, { headers: { cookie: userCookie } });
+  assert.equal(userIndicatorsAfterApproval.status, 200);
+  assert.ok((await userIndicatorsAfterApproval.json()).iocs.some((item) => item.id === userIndicatorBody.ioc.id));
+
+  const scanAfterApproval = await fetch(`${api.baseUrl}/api/analyze`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie: userCookie },
+    body: JSON.stringify({ payload: "https://reported.example/pay", resolveRedirects: false, source: "test" }),
+  });
+  assert.equal(scanAfterApproval.status, 201);
+  assert.ok((await scanAfterApproval.json()).indicators.some((item) => item.category === "Threat intelligence"));
+
+  const attemptedApprovedOverwrite = await fetch(`${api.baseUrl}/api/iocs`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie: userCookie },
+    body: JSON.stringify({ indicator: "reported.example", indicatorType: "domain", severity: "medium", source: "Untrusted overwrite" }),
+  });
+  assert.equal(attemptedApprovedOverwrite.status, 201);
+  assert.equal((await attemptedApprovedOverwrite.json()).alreadyActive, true);
+
+  const protectedApprovedIndicators = await fetch(`${api.baseUrl}/api/iocs`, { headers: { cookie: adminCookie } });
+  assert.equal(protectedApprovedIndicators.status, 200);
+  const protectedApprovedIndicator = (await protectedApprovedIndicators.json()).iocs.find((item) => item.id === userIndicatorBody.ioc.id);
+  assert.equal(protectedApprovedIndicator.severity, "high");
+  assert.equal(protectedApprovedIndicator.source, "User report");
 
   const forbiddenDelete = await fetch(`${api.baseUrl}/api/iocs/${userIndicatorBody.ioc.id}`, {
     method: "DELETE",
@@ -148,7 +218,28 @@ test("protects application data and supports login, registration, and logout", a
 
   const activityAfterDelete = await fetch(`${api.baseUrl}/api/activity`, { headers: { cookie: adminCookie } });
   assert.equal(activityAfterDelete.status, 200);
-  assert.ok((await activityAfterDelete.json()).activity.some((item) => item.action === "indicator_deleted"));
+  const activityAfterDeleteBody = await activityAfterDelete.json();
+  assert.ok(activityAfterDeleteBody.activity.some((item) => item.action === "indicator_approved"));
+  assert.ok(activityAfterDeleteBody.activity.some((item) => item.action === "indicator_deleted"));
+
+  const rejectedIndicator = await fetch(`${api.baseUrl}/api/iocs`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie: userCookie },
+    body: JSON.stringify({ indicator: "not-a-threat.example", indicatorType: "domain", severity: "medium", source: "User report" }),
+  });
+  assert.equal(rejectedIndicator.status, 201);
+  const rejectedIndicatorBody = await rejectedIndicator.json();
+
+  const adminRejection = await fetch(`${api.baseUrl}/api/iocs/${rejectedIndicatorBody.ioc.id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", cookie: adminCookie },
+    body: JSON.stringify({ action: "reject" }),
+  });
+  assert.equal(adminRejection.status, 200);
+
+  const indicatorsAfterRejection = await fetch(`${api.baseUrl}/api/iocs`, { headers: { cookie: adminCookie } });
+  assert.equal(indicatorsAfterRejection.status, 200);
+  assert.ok(!(await indicatorsAfterRejection.json()).iocs.some((item) => item.id === rejectedIndicatorBody.ioc.id));
 
   const duplicate = await fetch(`${api.baseUrl}/api/auth/register`, {
     method: "POST",

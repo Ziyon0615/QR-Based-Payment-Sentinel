@@ -14,6 +14,7 @@ import {
   listUsers,
   logActivity,
   registerUser,
+  reviewIoc,
   saveScan,
 } from "../../../backend/postgres-database.mjs";
 
@@ -124,13 +125,26 @@ async function handle(request: Request) {
       const limit = url.searchParams.get("limit");
       return json(200, { activity: await listActivity(limit ? Number(limit) : undefined, requestedUserId || null) });
     }
-    if (request.method === "GET" && url.pathname === "/api/iocs") return json(200, { iocs: await listIocs() });
+    if (request.method === "GET" && url.pathname === "/api/iocs") return json(200, { iocs: await listIocs(user.role !== "admin") });
     if (request.method === "POST" && url.pathname === "/api/iocs") {
       const input = await readJson(request);
       if (!input.indicator || !["url", "domain", "ip"].includes(input.indicatorType)) return json(400, { error: "indicator and a valid indicatorType are required" });
-      const ioc = await addIoc(input);
-      await logActivity(user.id, "indicator_added", { indicatorType: input.indicatorType, indicator: input.indicator });
-      return json(201, { ioc });
+      const ioc = await addIoc({ ...input, active: user.role === "admin", confidence: user.role === "admin" ? (input.confidence ?? 100) : 80 });
+      const pendingReview = user.role !== "admin" && !ioc.active;
+      const alreadyActive = user.role !== "admin" && Boolean(ioc.active);
+      await logActivity(user.id, alreadyActive ? "indicator_duplicate" : pendingReview ? "indicator_submitted" : "indicator_added", { indicatorType: input.indicatorType, indicator: input.indicator });
+      return json(201, { ioc, pendingReview, alreadyActive });
+    }
+    if (request.method === "PATCH" && url.pathname.startsWith("/api/iocs/")) {
+      if (user.role !== "admin") return json(403, { error: "Administrator access required." });
+      const id = decodeURIComponent(url.pathname.slice("/api/iocs/".length));
+      if (!id || id.includes("/")) return json(404, { error: "Threat indicator not found." });
+      const input = await readJson(request);
+      if (!["approve", "reject"].includes(input.action)) return json(400, { error: "action must be approve or reject" });
+      const ioc = await reviewIoc(id, input.action);
+      if (!ioc) return json(404, { error: "Threat indicator not found." });
+      await logActivity(user.id, input.action === "approve" ? "indicator_approved" : "indicator_rejected", { indicatorType: ioc.indicator_type, indicator: ioc.indicator });
+      return json(200, { action: input.action, ioc });
     }
     if (request.method === "DELETE" && url.pathname.startsWith("/api/iocs/")) {
       if (user.role !== "admin") return json(403, { error: "Administrator access required." });
@@ -167,8 +181,9 @@ async function handle(request: Request) {
 
 export const GET = handle;
 export const POST = handle;
+export const PATCH = handle;
 export const DELETE = handle;
 
 export function OPTIONS() {
-  return new Response(null, { status: 204, headers: { allow: "GET, POST, DELETE, OPTIONS" } });
+  return new Response(null, { status: 204, headers: { allow: "GET, POST, PATCH, DELETE, OPTIONS" } });
 }

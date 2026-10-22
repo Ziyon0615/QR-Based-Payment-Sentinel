@@ -182,8 +182,8 @@ export async function listScans(limit = 30, userId = null) {
   return result.rows.map(hydrateScan);
 }
 
-export async function listIocs() {
-  const result = await pool.query("SELECT * FROM iocs ORDER BY last_seen DESC, indicator ASC");
+export async function listIocs(activeOnly = false) {
+  const result = await pool.query(`SELECT * FROM iocs${activeOnly ? " WHERE active = TRUE" : ""} ORDER BY last_seen DESC, indicator ASC`);
   return result.rows;
 }
 
@@ -192,26 +192,33 @@ export async function addIoc(input) {
   const id = randomUUID();
   const result = await pool.query(`
     INSERT INTO iocs (id, indicator, indicator_type, severity, confidence, source, notes, active, first_seen, last_seen, expires_at)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, $8, $8, $9)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10)
     ON CONFLICT (indicator_type, (lower(indicator))) DO UPDATE SET
-      severity = EXCLUDED.severity,
-      confidence = EXCLUDED.confidence,
-      source = EXCLUDED.source,
-      notes = EXCLUDED.notes,
-      active = TRUE,
+      severity = CASE WHEN iocs.active AND NOT EXCLUDED.active THEN iocs.severity ELSE EXCLUDED.severity END,
+      confidence = CASE WHEN iocs.active AND NOT EXCLUDED.active THEN iocs.confidence ELSE EXCLUDED.confidence END,
+      source = CASE WHEN iocs.active AND NOT EXCLUDED.active THEN iocs.source ELSE EXCLUDED.source END,
+      notes = CASE WHEN iocs.active AND NOT EXCLUDED.active THEN iocs.notes ELSE EXCLUDED.notes END,
+      active = iocs.active OR EXCLUDED.active,
       last_seen = EXCLUDED.last_seen,
-      expires_at = EXCLUDED.expires_at
+      expires_at = CASE WHEN iocs.active AND NOT EXCLUDED.active THEN iocs.expires_at ELSE EXCLUDED.expires_at END
     RETURNING *
   `, [
     id, input.indicator.trim(), input.indicatorType, input.severity || "high",
     Number(input.confidence ?? 80), input.source || "Manual entry", input.notes || null,
-    timestamp, input.expiresAt || null,
+    Boolean(input.active), timestamp, input.expiresAt || null,
   ]);
   return result.rows[0];
 }
 
 export async function deleteIoc(id) {
   const result = await pool.query("DELETE FROM iocs WHERE id = $1 RETURNING *", [id]);
+  return result.rows[0] || null;
+}
+
+export async function reviewIoc(id, action) {
+  const result = action === "approve"
+    ? await pool.query("UPDATE iocs SET active = TRUE, last_seen = NOW() WHERE id = $1 RETURNING *", [id])
+    : await pool.query("DELETE FROM iocs WHERE id = $1 RETURNING *", [id]);
   return result.rows[0] || null;
 }
 

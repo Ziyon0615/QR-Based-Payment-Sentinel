@@ -263,8 +263,8 @@ export function listScans(limit = 30, userId = null) {
   return rows.map(hydrateScan);
 }
 
-export function listIocs() {
-  return db.prepare("SELECT * FROM iocs ORDER BY last_seen DESC, indicator ASC").all();
+export function listIocs(activeOnly = false) {
+  return db.prepare(`SELECT * FROM iocs${activeOnly ? " WHERE active = 1" : ""} ORDER BY last_seen DESC, indicator ASC`).all();
 }
 
 export function addIoc(input) {
@@ -272,15 +272,15 @@ export function addIoc(input) {
   const id = randomUUID();
   db.prepare(`
     INSERT INTO iocs (id, indicator, indicator_type, severity, confidence, source, notes, active, first_seen, last_seen, expires_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(indicator, indicator_type) DO UPDATE SET
-      severity = excluded.severity,
-      confidence = excluded.confidence,
-      source = excluded.source,
-      notes = excluded.notes,
-      active = 1,
+      severity = CASE WHEN iocs.active = 1 AND excluded.active = 0 THEN iocs.severity ELSE excluded.severity END,
+      confidence = CASE WHEN iocs.active = 1 AND excluded.active = 0 THEN iocs.confidence ELSE excluded.confidence END,
+      source = CASE WHEN iocs.active = 1 AND excluded.active = 0 THEN iocs.source ELSE excluded.source END,
+      notes = CASE WHEN iocs.active = 1 AND excluded.active = 0 THEN iocs.notes ELSE excluded.notes END,
+      active = CASE WHEN iocs.active = 1 THEN 1 ELSE excluded.active END,
       last_seen = excluded.last_seen,
-      expires_at = excluded.expires_at
+      expires_at = CASE WHEN iocs.active = 1 AND excluded.active = 0 THEN iocs.expires_at ELSE excluded.expires_at END
   `).run(
     id,
     input.indicator.trim(),
@@ -289,6 +289,7 @@ export function addIoc(input) {
     Number(input.confidence ?? 80),
     input.source || "Manual entry",
     input.notes || null,
+    input.active ? 1 : 0,
     timestamp,
     timestamp,
     input.expiresAt || null,
@@ -299,6 +300,17 @@ export function addIoc(input) {
 export function deleteIoc(id) {
   const ioc = db.prepare("SELECT * FROM iocs WHERE id = ?").get(id);
   if (!ioc) return null;
+  db.prepare("DELETE FROM iocs WHERE id = ?").run(id);
+  return ioc;
+}
+
+export function reviewIoc(id, action) {
+  const ioc = db.prepare("SELECT * FROM iocs WHERE id = ?").get(id);
+  if (!ioc) return null;
+  if (action === "approve") {
+    db.prepare("UPDATE iocs SET active = 1, last_seen = ? WHERE id = ?").run(new Date().toISOString(), id);
+    return db.prepare("SELECT * FROM iocs WHERE id = ?").get(id);
+  }
   db.prepare("DELETE FROM iocs WHERE id = ?").run(id);
   return ioc;
 }

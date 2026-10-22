@@ -26,7 +26,7 @@ type Stats = {
     topUsers: { id: string; username: string; total: number }[];
   };
 };
-type Ioc = { id: string; indicator: string; indicator_type: string; severity: string; confidence: number; source: string; active: number };
+type Ioc = { id: string; indicator: string; indicator_type: string; severity: string; confidence: number; source: string; active: boolean | number };
 type User = { id: string; username: string; email?: string | null; role: string; createdAt: string };
 type UserSummary = User & { scanCount: number; safeCount: number; riskyCount: number; lastScanAt?: string | null; lastActivityAt?: string | null };
 type Activity = { id: string; userId?: string | null; username: string; role: string; action: string; detail: Record<string, string | number>; createdAt: string };
@@ -66,7 +66,7 @@ export default function Home() {
   const [expectedLabel, setExpectedLabel] = useState("");
   const [iocDraft, setIocDraft] = useState({ indicator: "", indicatorType: "domain", severity: "high", source: "Manual research entry" });
   const [iocBusy, setIocBusy] = useState(false);
-  const [iocDeletingId, setIocDeletingId] = useState<string | null>(null);
+  const [iocAction, setIocAction] = useState<{ id: string; kind: "approve" | "reject" | "delete" } | null>(null);
   const [iocMessage, setIocMessage] = useState("");
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -198,14 +198,16 @@ export default function Home() {
       const response = await apiFetch("/api/iocs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...iocDraft, indicator: iocDraft.indicator.trim() }) });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "IoC could not be saved.");
-      setIocDraft({ ...iocDraft, indicator: "" }); setIocMessage("Threat indicator saved."); await refresh();
+      setIocDraft({ ...iocDraft, indicator: "" });
+      setIocMessage(body.alreadyActive ? "This indicator is already approved and active." : body.pendingReview ? "Submitted for administrator review." : "Threat indicator saved.");
+      await refresh();
     } catch (error) { setIocMessage(error instanceof Error ? error.message : "IoC could not be saved."); }
     finally { setIocBusy(false); }
   }
 
   async function deleteIndicator(ioc: Ioc) {
     if (user?.role !== "admin" || !window.confirm(`Delete the threat indicator “${ioc.indicator}”?`)) return;
-    setIocDeletingId(ioc.id); setIocMessage("");
+    setIocAction({ id: ioc.id, kind: "delete" }); setIocMessage("");
     try {
       const response = await apiFetch(`/api/iocs/${encodeURIComponent(ioc.id)}`, { method: "DELETE" });
       const body = await response.json();
@@ -214,7 +216,24 @@ export default function Home() {
       setIocMessage("Threat indicator deleted.");
       await refresh();
     } catch (error) { setIocMessage(error instanceof Error ? error.message : "Threat indicator could not be deleted."); }
-    finally { setIocDeletingId(null); }
+    finally { setIocAction(null); }
+  }
+
+  async function reviewIndicator(ioc: Ioc, action: "approve" | "reject") {
+    if (user?.role !== "admin") return;
+    if (action === "reject" && !window.confirm(`Reject and remove “${ioc.indicator}”?`)) return;
+    const pastTenseAction = action === "approve" ? "approved" : "rejected";
+    setIocAction({ id: ioc.id, kind: action }); setIocMessage("");
+    try {
+      const response = await apiFetch(`/api/iocs/${encodeURIComponent(ioc.id)}`, {
+        method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ action }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || `Threat indicator could not be ${pastTenseAction}.`);
+      setIocMessage(action === "approve" ? "Threat indicator approved." : "Threat indicator rejected.");
+      await refresh();
+    } catch (error) { setIocMessage(error instanceof Error ? error.message : `Threat indicator could not be ${pastTenseAction}.`); }
+    finally { setIocAction(null); }
   }
 
   async function submitAuthentication(event: FormEvent) {
@@ -246,6 +265,8 @@ export default function Home() {
   if (authStatus === "loading") return <AuthLoading />;
   if (authStatus === "guest") return <AuthScreen mode={authMode} form={authForm} message={authMessage} busy={authBusy} onModeChange={(mode) => { setAuthMode(mode); setAuthMessage(""); }} onFormChange={setAuthForm} onSubmit={submitAuthentication} />;
   const visibleNavItems = navItems;
+  const activeIocs = iocs.filter((ioc) => Boolean(ioc.active));
+  const pendingIocs = iocs.filter((ioc) => !ioc.active);
 
   return (
     <main className="app-shell">
@@ -293,8 +314,27 @@ export default function Home() {
       </div>}
 
       {view === "intel" && <div className="page data-page">
-        <div className="page-title"><div><p className="eyebrow">LOCAL CTI STORE</p><h1>Threat intelligence</h1><p>Add controlled research indicators. Matches contribute to the risk score without opening the destination.</p></div><span className="research-badge">{iocs.filter((item) => item.active).length} active IoCs</span></div>
-        <div className="intel-grid"><form className="panel ioc-form" onSubmit={addIndicator}><div className="panel-title"><div><p className="eyebrow">NEW INDICATOR</p><h2>Add to threat intelligence</h2></div></div><label>Indicator<input required maxLength={2048} value={iocDraft.indicator} onChange={(event) => setIocDraft({ ...iocDraft, indicator: event.target.value })} placeholder="domain.example, full URL, or IP address" /></label><div className="form-row"><label>Type<select value={iocDraft.indicatorType} onChange={(event) => setIocDraft({ ...iocDraft, indicatorType: event.target.value })}><option value="domain">Domain</option><option value="url">URL</option><option value="ip">IP address</option></select></label><label>Severity<select value={iocDraft.severity} onChange={(event) => setIocDraft({ ...iocDraft, severity: event.target.value })}><option>critical</option><option>high</option><option>medium</option></select></label></div><label>Source<input required maxLength={160} value={iocDraft.source} onChange={(event) => setIocDraft({ ...iocDraft, source: event.target.value })} /></label><button className="analyze-button" disabled={iocBusy}>{iocBusy ? "Saving…" : "Save indicator"}<span>＋</span></button>{iocMessage && <p className="form-message" role="status">{iocMessage}</p>}</form><section className="panel"><div className="panel-title"><div><p className="eyebrow">ACTIVE FEED</p><h2>Indicators of Compromise</h2></div></div><div className="ioc-list">{iocs.map((ioc) => <article className={user?.role === "admin" ? "admin-controls" : ""} key={ioc.id}><span className={`severity-dot ${ioc.severity}`} /><div><strong>{ioc.indicator}</strong><small>{ioc.indicator_type} · {ioc.source}</small></div><b>{ioc.confidence}%</b>{user?.role === "admin" && <button className="ioc-delete" type="button" disabled={iocDeletingId === ioc.id} onClick={() => void deleteIndicator(ioc)} aria-label={`Delete ${ioc.indicator}`}>{iocDeletingId === ioc.id ? "Deleting…" : "Delete"}</button>}</article>)}{!iocs.length && <p className="empty-iocs">No active threat indicators.</p>}</div></section></div>
+        <div className="page-title"><div><p className="eyebrow">LOCAL CTI STORE</p><h1>Threat intelligence</h1><p>User-submitted indicators require administrator approval before they can affect scan results.</p></div><span className="research-badge">{activeIocs.length} active IoCs</span></div>
+        <div className="intel-grid">
+          <form className="panel ioc-form" onSubmit={addIndicator}>
+            <div className="panel-title"><div><p className="eyebrow">NEW INDICATOR</p><h2>Submit threat intelligence</h2></div></div>
+            <label>Indicator<input required maxLength={2048} value={iocDraft.indicator} onChange={(event) => setIocDraft({ ...iocDraft, indicator: event.target.value })} placeholder="domain.example, full URL, or IP address" /></label>
+            <div className="form-row"><label>Type<select value={iocDraft.indicatorType} onChange={(event) => setIocDraft({ ...iocDraft, indicatorType: event.target.value })}><option value="domain">Domain</option><option value="url">URL</option><option value="ip">IP address</option></select></label><label>Severity<select value={iocDraft.severity} onChange={(event) => setIocDraft({ ...iocDraft, severity: event.target.value })}><option>critical</option><option>high</option><option>medium</option></select></label></div>
+            <label>Source<input required maxLength={160} value={iocDraft.source} onChange={(event) => setIocDraft({ ...iocDraft, source: event.target.value })} /></label>
+            <button className="analyze-button" disabled={iocBusy}>{iocBusy ? "Saving…" : user?.role === "admin" ? "Save indicator" : "Submit for review"}<span>＋</span></button>
+            {iocMessage ? <p className="form-message" role="status">{iocMessage}</p> : null}
+          </form>
+          <div className="intel-column">
+            {user?.role === "admin" ? <section className="panel pending-panel">
+              <div className="panel-title"><div><p className="eyebrow">PENDING REVIEW</p><h2>User submissions</h2></div><span>{pendingIocs.length} pending</span></div>
+              <div className="ioc-list pending-list">{pendingIocs.map((ioc) => <article className="review-controls" key={ioc.id}><span className={`severity-dot ${ioc.severity}`} /><div><strong>{ioc.indicator}</strong><small>{ioc.indicator_type} · {ioc.source}</small></div><b>{ioc.confidence}%</b><div className="ioc-actions"><button className="ioc-approve" type="button" disabled={iocAction?.id === ioc.id} onClick={() => void reviewIndicator(ioc, "approve")} aria-label={`Approve ${ioc.indicator}`}>{iocAction?.id === ioc.id && iocAction.kind === "approve" ? "Approving…" : "Approve"}</button><button className="ioc-reject" type="button" disabled={iocAction?.id === ioc.id} onClick={() => void reviewIndicator(ioc, "reject")} aria-label={`Reject ${ioc.indicator}`}>{iocAction?.id === ioc.id && iocAction.kind === "reject" ? "Rejecting…" : "Reject"}</button></div></article>)}{pendingIocs.length === 0 ? <p className="empty-iocs">No indicators awaiting review.</p> : null}</div>
+            </section> : null}
+            <section className="panel">
+              <div className="panel-title"><div><p className="eyebrow">ACTIVE FEED</p><h2>Indicators of Compromise</h2></div><span>{activeIocs.length} approved</span></div>
+              <div className="ioc-list">{activeIocs.map((ioc) => <article className={user?.role === "admin" ? "admin-controls" : ""} key={ioc.id}><span className={`severity-dot ${ioc.severity}`} /><div><strong>{ioc.indicator}</strong><small>{ioc.indicator_type} · {ioc.source}</small></div><b>{ioc.confidence}%</b>{user?.role === "admin" ? <button className="ioc-delete" type="button" disabled={iocAction?.id === ioc.id} onClick={() => void deleteIndicator(ioc)} aria-label={`Delete ${ioc.indicator}`}>{iocAction?.id === ioc.id && iocAction.kind === "delete" ? "Deleting…" : "Delete"}</button> : null}</article>)}{activeIocs.length === 0 ? <p className="empty-iocs">No active threat indicators.</p> : null}</div>
+            </section>
+          </div>
+        </div>
       </div>}
 
       <nav className="mobile-nav" aria-label="Mobile navigation">{visibleNavItems.map(([key, label]) => <button key={key} className={view === key ? "active" : ""} onClick={() => setView(key)}><span>{key === "dashboard" ? "▦" : key === "scan" ? "⌁" : key === "history" ? "◷" : "◇"}</span>{label.split(" ")[0]}</button>)}</nav>
@@ -309,6 +349,10 @@ const activityLabels: Record<string, string> = {
   signed_out: "Signed out",
   qr_scanned: "Analyzed a QR code",
   indicator_added: "Added a threat indicator",
+  indicator_submitted: "Submitted a threat indicator for review",
+  indicator_duplicate: "Submitted an indicator already in the active feed",
+  indicator_approved: "Approved a threat indicator",
+  indicator_rejected: "Rejected a threat indicator",
   indicator_deleted: "Deleted a threat indicator",
 };
 
@@ -351,7 +395,7 @@ function Dashboard({ user, stats, history, users, activity, selectedUserId, onSe
 }
 
 function ActivityList({ activity, showUser }: { activity: Activity[]; showUser: boolean }) {
-  return <div className="audit-list">{activity.map((item) => <article key={item.id}><span className={`audit-icon ${item.action}`}>{item.action === "qr_scanned" ? "QR" : item.action === "signed_in" ? "IN" : item.action === "signed_out" ? "OUT" : item.action === "account_created" ? "+" : "IOC"}</span><div><strong>{showUser ? `${item.username} · ` : ""}{activityLabels[item.action] || item.action.replaceAll("_", " ")}</strong><small>{item.action === "qr_scanned" && item.detail.classification ? `${item.detail.classification} · risk ${item.detail.riskScore}/100 · ${item.detail.source}` : item.action === "indicator_added" || item.action === "indicator_deleted" ? `${item.detail.indicatorType}: ${item.detail.indicator}` : item.role}</small></div><time dateTime={item.createdAt}>{new Date(item.createdAt).toLocaleString()}</time></article>)}{!activity.length && <p className="empty-activity">No activity recorded yet.</p>}</div>;
+  return <div className="audit-list">{activity.map((item) => <article key={item.id}><span className={`audit-icon ${item.action}`}>{item.action === "qr_scanned" ? "QR" : item.action === "signed_in" ? "IN" : item.action === "signed_out" ? "OUT" : item.action === "account_created" ? "+" : "IOC"}</span><div><strong>{showUser ? `${item.username} · ` : ""}{activityLabels[item.action] || item.action.replaceAll("_", " ")}</strong><small>{item.action === "qr_scanned" && item.detail.classification ? `${item.detail.classification} · risk ${item.detail.riskScore}/100 · ${item.detail.source}` : item.action.startsWith("indicator_") ? `${item.detail.indicatorType}: ${item.detail.indicator}` : item.role}</small></div><time dateTime={item.createdAt}>{new Date(item.createdAt).toLocaleString()}</time></article>)}{!activity.length && <p className="empty-activity">No activity recorded yet.</p>}</div>;
 }
 
 function StatusPill({ value }: { value: Classification }) { return <span className={`status-pill ${value.toLowerCase()}`}><i />{value}</span>; }

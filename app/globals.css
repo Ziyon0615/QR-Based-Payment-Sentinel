@@ -479,8 +479,9 @@ textarea:focus, input:focus, select:focus { outline: 3px solid rgba(41,169,130,.
 .audit-list article:hover { box-shadow: var(--raised-sm); }
 .audit-icon { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 11px; background: #dce6e7; color: #687a76; box-shadow: var(--inset); font-size: 7px; font-weight: 950; }
 .audit-icon.qr_scanned { background: var(--green-soft); color: var(--green); }
-.audit-icon.indicator_added { background: var(--amber-soft); color: #995f13; }
-.audit-icon.indicator_deleted { background: var(--red-soft); color: var(--red); }
+.audit-icon.indicator_added, .audit-icon.indicator_approved { background: var(--green-soft); color: var(--green); }
+.audit-icon.indicator_submitted, .audit-icon.indicator_duplicate { background: var(--amber-soft); color: #995f13; }
+.audit-icon.indicator_deleted, .audit-icon.indicator_rejected { background: var(--red-soft); color: var(--red); }
 .audit-list article strong, .audit-list article small { display: block; }
 .audit-list article strong { font-size: 9px; }
 .audit-list article small { max-width: 270px; margin-top: 4px; overflow: hidden; color: var(--muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
@@ -525,6 +526,7 @@ textarea:focus, input:focus, select:focus { outline: 3px solid rgba(41,169,130,.
 .empty-table { padding: 58px; text-align: center; color: var(--muted); font-size: 12px; }
 
 .intel-grid { display: grid; grid-template-columns: .75fr 1.25fr; gap: 28px; margin-bottom: 28px; }
+.intel-column { display: grid; gap: 28px; min-width: 0; }
 .panel { padding: 28px; }
 .panel-title { display: flex; justify-content: space-between; margin-bottom: 24px; }
 .panel-title h2 { font-weight: 750; letter-spacing: -.7px; margin: 0; }
@@ -535,14 +537,18 @@ textarea:focus, input:focus, select:focus { outline: 3px solid rgba(41,169,130,.
 .ioc-list { max-height: 465px; overflow-y: auto; padding: 3px 7px 7px 3px; }
 .ioc-list article { display: grid; grid-template-columns: 10px 1fr 45px; align-items: center; gap: 13px; padding: 14px 12px; border-radius: 12px; }
 .ioc-list article.admin-controls { grid-template-columns: 10px minmax(0, 1fr) 45px auto; }
+.ioc-list article.review-controls { grid-template-columns: 10px minmax(0, 1fr) 45px auto; }
 .ioc-list article:hover { box-shadow: var(--raised-sm); }
 .ioc-list strong, .ioc-list small { display: block; }
 .ioc-list strong { font: 11px ui-monospace, monospace; overflow-wrap: anywhere; }
 .ioc-list small { color: var(--muted); margin-top: 4px; font-size: 8px; }
 .ioc-list b { color: var(--muted); font-size: 9px; }
-.ioc-delete { border: 0; border-radius: 9px; padding: 8px 10px; background: var(--red-soft); color: var(--red); font-size: 8px; font-weight: 850; cursor: pointer; }
-.ioc-delete:hover { box-shadow: var(--raised-sm); }
-.ioc-delete:disabled { cursor: wait; opacity: .6; }
+.ioc-actions { display: flex; gap: 7px; }
+.ioc-delete, .ioc-approve, .ioc-reject { border: 0; border-radius: 9px; padding: 8px 10px; font-size: 8px; font-weight: 850; cursor: pointer; }
+.ioc-delete, .ioc-reject { background: var(--red-soft); color: var(--red); }
+.ioc-approve { background: var(--green-soft); color: var(--green); }
+.ioc-delete:hover, .ioc-approve:hover, .ioc-reject:hover { box-shadow: var(--raised-sm); }
+.ioc-delete:disabled, .ioc-approve:disabled, .ioc-reject:disabled { cursor: wait; opacity: .6; }
 .empty-iocs { padding: 70px 10px; color: var(--muted); font-size: 10px; text-align: center; }
 .severity-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 4px rgba(213,139,39,.12); }
 .severity-dot.high, .severity-dot.critical { background: var(--red); box-shadow: 0 0 0 4px rgba(201,90,89,.12); }
@@ -613,6 +619,8 @@ footer { max-width: 1304px; margin: 0 auto; padding: 25px 8px 34px; display: fle
   .history-row > span:first-child { grid-column: 1 / 3; }
   .history-row > span:nth-child(4), .history-row > span:nth-child(5) { display: none; }
   .panel { padding: 20px; }
+  .ioc-list article.review-controls { grid-template-columns: 10px minmax(0, 1fr) 42px; }
+  .review-controls .ioc-actions { grid-column: 2 / 4; justify-content: flex-end; }
   .mobile-nav {
     position: fixed;
     z-index: 40;

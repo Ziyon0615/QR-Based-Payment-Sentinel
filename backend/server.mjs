@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { analyzePayload } from "./engine.mjs";
-import { addIoc, authenticateUser, createSession, deleteIoc, deleteSession, findIocMatches, getSessionUser, getStats, listActivity, listIocs, listScans, listUsers, logActivity, registerUser, saveScan } from "./repository.mjs";
+import { addIoc, authenticateUser, createSession, deleteIoc, deleteSession, findIocMatches, getSessionUser, getStats, listActivity, listIocs, listScans, listUsers, logActivity, registerUser, reviewIoc, saveScan } from "./repository.mjs";
 
 const port = Number(process.env.PORT || 8000);
 const allowedOrigins = new Set((process.env.ALLOWED_ORIGINS || "http://localhost:3000,http://127.0.0.1:3000").split(",").map((value) => value.trim()));
@@ -9,7 +9,7 @@ const loginAttempts = new Map();
 function corsHeaders(request) {
   const origin = request.headers.origin;
   const headers = {
-    "access-control-allow-methods": "GET,POST,DELETE,OPTIONS",
+    "access-control-allow-methods": "GET,POST,PATCH,DELETE,OPTIONS",
     "access-control-allow-headers": "content-type",
     "access-control-allow-credentials": "true",
     vary: "Origin",
@@ -129,13 +129,26 @@ const server = createServer(async (request, response) => {
       const requestedUserId = user.role === "admin" ? url.searchParams.get("userId") : user.id;
       return send(request, response, 200, { activity: await listActivity(url.searchParams.get("limit"), requestedUserId || null) });
     }
-    if (request.method === "GET" && url.pathname === "/api/iocs") return send(request, response, 200, { iocs: await listIocs() });
+    if (request.method === "GET" && url.pathname === "/api/iocs") return send(request, response, 200, { iocs: await listIocs(user.role !== "admin") });
     if (request.method === "POST" && url.pathname === "/api/iocs") {
       const input = await readJson(request);
       if (!input.indicator || !["url", "domain", "ip"].includes(input.indicatorType)) return send(request, response, 400, { error: "indicator and a valid indicatorType are required" });
-      const ioc = await addIoc(input);
-      await logActivity(user.id, "indicator_added", { indicatorType: input.indicatorType, indicator: input.indicator });
-      return send(request, response, 201, { ioc });
+      const ioc = await addIoc({ ...input, active: user.role === "admin", confidence: user.role === "admin" ? (input.confidence ?? 100) : 80 });
+      const pendingReview = user.role !== "admin" && !ioc.active;
+      const alreadyActive = user.role !== "admin" && Boolean(ioc.active);
+      await logActivity(user.id, alreadyActive ? "indicator_duplicate" : pendingReview ? "indicator_submitted" : "indicator_added", { indicatorType: input.indicatorType, indicator: input.indicator });
+      return send(request, response, 201, { ioc, pendingReview, alreadyActive });
+    }
+    if (request.method === "PATCH" && url.pathname.startsWith("/api/iocs/")) {
+      if (user.role !== "admin") return send(request, response, 403, { error: "Administrator access required." });
+      const id = decodeURIComponent(url.pathname.slice("/api/iocs/".length));
+      if (!id || id.includes("/")) return send(request, response, 404, { error: "Threat indicator not found." });
+      const input = await readJson(request);
+      if (!["approve", "reject"].includes(input.action)) return send(request, response, 400, { error: "action must be approve or reject" });
+      const ioc = await reviewIoc(id, input.action);
+      if (!ioc) return send(request, response, 404, { error: "Threat indicator not found." });
+      await logActivity(user.id, input.action === "approve" ? "indicator_approved" : "indicator_rejected", { indicatorType: ioc.indicator_type, indicator: ioc.indicator });
+      return send(request, response, 200, { action: input.action, ioc });
     }
     if (request.method === "DELETE" && url.pathname.startsWith("/api/iocs/")) {
       if (user.role !== "admin") return send(request, response, 403, { error: "Administrator access required." });

@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { analyzePayload } from "./engine.mjs";
-import { addIoc, authenticateUser, createSession, deleteSession, findIocMatches, getSessionUser, getStats, listActivity, listIocs, listScans, listUsers, logActivity, registerUser, saveScan } from "./repository.mjs";
+import { addIoc, authenticateUser, createSession, deleteIoc, deleteSession, findIocMatches, getSessionUser, getStats, listActivity, listIocs, listScans, listUsers, logActivity, registerUser, saveScan } from "./repository.mjs";
 
 const port = Number(process.env.PORT || 8000);
 const allowedOrigins = new Set((process.env.ALLOWED_ORIGINS || "http://localhost:3000,http://127.0.0.1:3000").split(",").map((value) => value.trim()));
@@ -9,7 +9,7 @@ const loginAttempts = new Map();
 function corsHeaders(request) {
   const origin = request.headers.origin;
   const headers = {
-    "access-control-allow-methods": "GET,POST,OPTIONS",
+    "access-control-allow-methods": "GET,POST,DELETE,OPTIONS",
     "access-control-allow-headers": "content-type",
     "access-control-allow-credentials": "true",
     vary: "Origin",
@@ -136,6 +136,15 @@ const server = createServer(async (request, response) => {
       const ioc = await addIoc(input);
       await logActivity(user.id, "indicator_added", { indicatorType: input.indicatorType, indicator: input.indicator });
       return send(request, response, 201, { ioc });
+    }
+    if (request.method === "DELETE" && url.pathname.startsWith("/api/iocs/")) {
+      if (user.role !== "admin") return send(request, response, 403, { error: "Administrator access required." });
+      const id = decodeURIComponent(url.pathname.slice("/api/iocs/".length));
+      if (!id || id.includes("/")) return send(request, response, 404, { error: "Threat indicator not found." });
+      const ioc = await deleteIoc(id);
+      if (!ioc) return send(request, response, 404, { error: "Threat indicator not found." });
+      await logActivity(user.id, "indicator_deleted", { indicatorType: ioc.indicator_type, indicator: ioc.indicator });
+      return send(request, response, 200, { deleted: true, ioc });
     }
     if (request.method === "POST" && url.pathname === "/api/analyze") {
       const input = await readJson(request);

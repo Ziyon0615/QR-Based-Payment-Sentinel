@@ -122,11 +122,33 @@ test("protects application data and supports login, registration, and logout", a
     body: JSON.stringify({ indicator: "reported.example", indicatorType: "domain", severity: "high", source: "User report" }),
   });
   assert.equal(userIndicator.status, 201);
-  assert.equal((await userIndicator.json()).ioc.indicator, "reported.example");
+  const userIndicatorBody = await userIndicator.json();
+  assert.equal(userIndicatorBody.ioc.indicator, "reported.example");
 
   const activityAfterIndicator = await fetch(`${api.baseUrl}/api/activity`, { headers: { cookie: userCookie } });
   assert.equal(activityAfterIndicator.status, 200);
   assert.ok((await activityAfterIndicator.json()).activity.some((item) => item.action === "indicator_added"));
+
+  const forbiddenDelete = await fetch(`${api.baseUrl}/api/iocs/${userIndicatorBody.ioc.id}`, {
+    method: "DELETE",
+    headers: { cookie: userCookie },
+  });
+  assert.equal(forbiddenDelete.status, 403);
+
+  const adminDelete = await fetch(`${api.baseUrl}/api/iocs/${userIndicatorBody.ioc.id}`, {
+    method: "DELETE",
+    headers: { cookie: adminCookie },
+  });
+  assert.equal(adminDelete.status, 200);
+  assert.equal((await adminDelete.json()).ioc.id, userIndicatorBody.ioc.id);
+
+  const indicatorsAfterDelete = await fetch(`${api.baseUrl}/api/iocs`, { headers: { cookie: adminCookie } });
+  assert.equal(indicatorsAfterDelete.status, 200);
+  assert.ok(!(await indicatorsAfterDelete.json()).iocs.some((item) => item.id === userIndicatorBody.ioc.id));
+
+  const activityAfterDelete = await fetch(`${api.baseUrl}/api/activity`, { headers: { cookie: adminCookie } });
+  assert.equal(activityAfterDelete.status, 200);
+  assert.ok((await activityAfterDelete.json()).activity.some((item) => item.action === "indicator_deleted"));
 
   const duplicate = await fetch(`${api.baseUrl}/api/auth/register`, {
     method: "POST",

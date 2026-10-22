@@ -66,6 +66,7 @@ export default function Home() {
   const [expectedLabel, setExpectedLabel] = useState("");
   const [iocDraft, setIocDraft] = useState({ indicator: "", indicatorType: "domain", severity: "high", source: "Manual research entry" });
   const [iocBusy, setIocBusy] = useState(false);
+  const [iocDeletingId, setIocDeletingId] = useState<string | null>(null);
   const [iocMessage, setIocMessage] = useState("");
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -202,6 +203,20 @@ export default function Home() {
     finally { setIocBusy(false); }
   }
 
+  async function deleteIndicator(ioc: Ioc) {
+    if (user?.role !== "admin" || !window.confirm(`Delete the threat indicator “${ioc.indicator}”?`)) return;
+    setIocDeletingId(ioc.id); setIocMessage("");
+    try {
+      const response = await apiFetch(`/api/iocs/${encodeURIComponent(ioc.id)}`, { method: "DELETE" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Threat indicator could not be deleted.");
+      setIocs((current) => current.filter((item) => item.id !== ioc.id));
+      setIocMessage("Threat indicator deleted.");
+      await refresh();
+    } catch (error) { setIocMessage(error instanceof Error ? error.message : "Threat indicator could not be deleted."); }
+    finally { setIocDeletingId(null); }
+  }
+
   async function submitAuthentication(event: FormEvent) {
     event.preventDefault(); setAuthMessage("");
     if (authMode === "register") {
@@ -279,7 +294,7 @@ export default function Home() {
 
       {view === "intel" && <div className="page data-page">
         <div className="page-title"><div><p className="eyebrow">LOCAL CTI STORE</p><h1>Threat intelligence</h1><p>Add controlled research indicators. Matches contribute to the risk score without opening the destination.</p></div><span className="research-badge">{iocs.filter((item) => item.active).length} active IoCs</span></div>
-        <div className="intel-grid"><form className="panel ioc-form" onSubmit={addIndicator}><div className="panel-title"><div><p className="eyebrow">NEW INDICATOR</p><h2>Add to local intelligence</h2></div></div><label>Indicator<input required maxLength={2048} value={iocDraft.indicator} onChange={(event) => setIocDraft({ ...iocDraft, indicator: event.target.value })} placeholder="domain.example, full URL, or IP address" /></label><div className="form-row"><label>Type<select value={iocDraft.indicatorType} onChange={(event) => setIocDraft({ ...iocDraft, indicatorType: event.target.value })}><option value="domain">Domain</option><option value="url">URL</option><option value="ip">IP address</option></select></label><label>Severity<select value={iocDraft.severity} onChange={(event) => setIocDraft({ ...iocDraft, severity: event.target.value })}><option>critical</option><option>high</option><option>medium</option></select></label></div><label>Source<input required maxLength={160} value={iocDraft.source} onChange={(event) => setIocDraft({ ...iocDraft, source: event.target.value })} /></label><button className="analyze-button" disabled={iocBusy}>{iocBusy ? "Saving…" : "Save indicator"}<span>＋</span></button>{iocMessage && <p className="form-message" role="status">{iocMessage}</p>}</form><section className="panel"><div className="panel-title"><div><p className="eyebrow">ACTIVE FEED</p><h2>Indicators of Compromise</h2></div></div><div className="ioc-list">{iocs.map((ioc) => <article key={ioc.id}><span className={`severity-dot ${ioc.severity}`} /><div><strong>{ioc.indicator}</strong><small>{ioc.indicator_type} · {ioc.source}</small></div><b>{ioc.confidence}%</b></article>)}</div></section></div>
+        <div className="intel-grid"><form className="panel ioc-form" onSubmit={addIndicator}><div className="panel-title"><div><p className="eyebrow">NEW INDICATOR</p><h2>Add to threat intelligence</h2></div></div><label>Indicator<input required maxLength={2048} value={iocDraft.indicator} onChange={(event) => setIocDraft({ ...iocDraft, indicator: event.target.value })} placeholder="domain.example, full URL, or IP address" /></label><div className="form-row"><label>Type<select value={iocDraft.indicatorType} onChange={(event) => setIocDraft({ ...iocDraft, indicatorType: event.target.value })}><option value="domain">Domain</option><option value="url">URL</option><option value="ip">IP address</option></select></label><label>Severity<select value={iocDraft.severity} onChange={(event) => setIocDraft({ ...iocDraft, severity: event.target.value })}><option>critical</option><option>high</option><option>medium</option></select></label></div><label>Source<input required maxLength={160} value={iocDraft.source} onChange={(event) => setIocDraft({ ...iocDraft, source: event.target.value })} /></label><button className="analyze-button" disabled={iocBusy}>{iocBusy ? "Saving…" : "Save indicator"}<span>＋</span></button>{iocMessage && <p className="form-message" role="status">{iocMessage}</p>}</form><section className="panel"><div className="panel-title"><div><p className="eyebrow">ACTIVE FEED</p><h2>Indicators of Compromise</h2></div></div><div className="ioc-list">{iocs.map((ioc) => <article className={user?.role === "admin" ? "admin-controls" : ""} key={ioc.id}><span className={`severity-dot ${ioc.severity}`} /><div><strong>{ioc.indicator}</strong><small>{ioc.indicator_type} · {ioc.source}</small></div><b>{ioc.confidence}%</b>{user?.role === "admin" && <button className="ioc-delete" type="button" disabled={iocDeletingId === ioc.id} onClick={() => void deleteIndicator(ioc)} aria-label={`Delete ${ioc.indicator}`}>{iocDeletingId === ioc.id ? "Deleting…" : "Delete"}</button>}</article>)}{!iocs.length && <p className="empty-iocs">No active threat indicators.</p>}</div></section></div>
       </div>}
 
       <nav className="mobile-nav" aria-label="Mobile navigation">{visibleNavItems.map(([key, label]) => <button key={key} className={view === key ? "active" : ""} onClick={() => setView(key)}><span>{key === "dashboard" ? "▦" : key === "scan" ? "⌁" : key === "history" ? "◷" : "◇"}</span>{label.split(" ")[0]}</button>)}</nav>
@@ -294,6 +309,7 @@ const activityLabels: Record<string, string> = {
   signed_out: "Signed out",
   qr_scanned: "Analyzed a QR code",
   indicator_added: "Added a threat indicator",
+  indicator_deleted: "Deleted a threat indicator",
 };
 
 function Dashboard({ user, stats, history, users, activity, selectedUserId, onSelectUser, onOpenScanner, onOpenHistory, onOpenScan }: {
@@ -335,7 +351,7 @@ function Dashboard({ user, stats, history, users, activity, selectedUserId, onSe
 }
 
 function ActivityList({ activity, showUser }: { activity: Activity[]; showUser: boolean }) {
-  return <div className="audit-list">{activity.map((item) => <article key={item.id}><span className={`audit-icon ${item.action}`}>{item.action === "qr_scanned" ? "QR" : item.action === "signed_in" ? "IN" : item.action === "signed_out" ? "OUT" : item.action === "account_created" ? "+" : "IOC"}</span><div><strong>{showUser ? `${item.username} · ` : ""}{activityLabels[item.action] || item.action.replaceAll("_", " ")}</strong><small>{item.action === "qr_scanned" && item.detail.classification ? `${item.detail.classification} · risk ${item.detail.riskScore}/100 · ${item.detail.source}` : item.action === "indicator_added" ? `${item.detail.indicatorType}: ${item.detail.indicator}` : item.role}</small></div><time dateTime={item.createdAt}>{new Date(item.createdAt).toLocaleString()}</time></article>)}{!activity.length && <p className="empty-activity">No activity recorded yet.</p>}</div>;
+  return <div className="audit-list">{activity.map((item) => <article key={item.id}><span className={`audit-icon ${item.action}`}>{item.action === "qr_scanned" ? "QR" : item.action === "signed_in" ? "IN" : item.action === "signed_out" ? "OUT" : item.action === "account_created" ? "+" : "IOC"}</span><div><strong>{showUser ? `${item.username} · ` : ""}{activityLabels[item.action] || item.action.replaceAll("_", " ")}</strong><small>{item.action === "qr_scanned" && item.detail.classification ? `${item.detail.classification} · risk ${item.detail.riskScore}/100 · ${item.detail.source}` : item.action === "indicator_added" || item.action === "indicator_deleted" ? `${item.detail.indicatorType}: ${item.detail.indicator}` : item.role}</small></div><time dateTime={item.createdAt}>{new Date(item.createdAt).toLocaleString()}</time></article>)}{!activity.length && <p className="empty-activity">No activity recorded yet.</p>}</div>;
 }
 
 function StatusPill({ value }: { value: Classification }) { return <span className={`status-pill ${value.toLowerCase()}`}><i />{value}</span>; }

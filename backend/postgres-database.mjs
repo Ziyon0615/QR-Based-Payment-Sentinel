@@ -210,6 +210,11 @@ export async function addIoc(input) {
   return result.rows[0];
 }
 
+export async function deleteIoc(id) {
+  const result = await pool.query("DELETE FROM iocs WHERE id = $1 RETURNING *", [id]);
+  return result.rows[0] || null;
+}
+
 export async function getStats(userId = null) {
   const where = userId ? " WHERE user_id = $1" : "";
   const parameters = userId ? [userId] : [];

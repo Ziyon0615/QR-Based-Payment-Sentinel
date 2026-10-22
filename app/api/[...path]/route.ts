@@ -3,6 +3,7 @@ import {
   addIoc,
   authenticateUser,
   createSession,
+  deleteIoc,
   deleteSession,
   findIocMatches,
   getSessionUser,
@@ -131,6 +132,15 @@ async function handle(request: Request) {
       await logActivity(user.id, "indicator_added", { indicatorType: input.indicatorType, indicator: input.indicator });
       return json(201, { ioc });
     }
+    if (request.method === "DELETE" && url.pathname.startsWith("/api/iocs/")) {
+      if (user.role !== "admin") return json(403, { error: "Administrator access required." });
+      const id = decodeURIComponent(url.pathname.slice("/api/iocs/".length));
+      if (!id || id.includes("/")) return json(404, { error: "Threat indicator not found." });
+      const ioc = await deleteIoc(id);
+      if (!ioc) return json(404, { error: "Threat indicator not found." });
+      await logActivity(user.id, "indicator_deleted", { indicatorType: ioc.indicator_type, indicator: ioc.indicator });
+      return json(200, { deleted: true, ioc });
+    }
     if (request.method === "POST" && url.pathname === "/api/analyze") {
       const input = await readJson(request);
       if (!input.payload) return json(400, { error: "payload is required" });
@@ -157,7 +167,8 @@ async function handle(request: Request) {
 
 export const GET = handle;
 export const POST = handle;
+export const DELETE = handle;
 
 export function OPTIONS() {
-  return new Response(null, { status: 204, headers: { allow: "GET, POST, OPTIONS" } });
+  return new Response(null, { status: 204, headers: { allow: "GET, POST, DELETE, OPTIONS" } });
 }

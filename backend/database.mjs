@@ -296,6 +296,13 @@ export function addIoc(input) {
   return db.prepare("SELECT * FROM iocs WHERE indicator_type = ? AND lower(indicator) = lower(?)").get(input.indicatorType, input.indicator.trim());
 }
 
+export function deleteIoc(id) {
+  const ioc = db.prepare("SELECT * FROM iocs WHERE id = ?").get(id);
+  if (!ioc) return null;
+  db.prepare("DELETE FROM iocs WHERE id = ?").run(id);
+  return ioc;
+}
+
 export function getStats(userId = null) {
   const where = userId ? " WHERE user_id = ?" : "";
   const parameters = userId ? [userId] : [];

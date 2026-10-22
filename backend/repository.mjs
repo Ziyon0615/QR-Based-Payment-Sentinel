@@ -17,6 +17,7 @@ export const saveScan = (result, input) => call("saveScan", result, input);
 export const listScans = (limit, userId) => call("listScans", limit, userId);
 export const listIocs = () => call("listIocs");
 export const addIoc = (input) => call("addIoc", input);
+export const deleteIoc = (id) => call("deleteIoc", id);
 export const getStats = (userId) => call("getStats", userId);
 export const logActivity = (userId, action, detail) => call("logActivity", userId, action, detail);
 export const listActivity = (limit, userId) => call("listActivity", limit, userId);

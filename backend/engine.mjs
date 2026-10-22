@@ -54,7 +54,11 @@ function crc16(text) {
 }
 
 function parsePaymentContext(payload) {
-  if (!/^\d{8,}$/.test(payload) || !payload.startsWith("0002")) return null;
+  // EMV merchant-presented QR payloads begin with tag 00, length 02, value 01.
+  // Field values are allowed to be alphanumeric (for example QR Ph and GCash
+  // identifiers), so requiring the entire payload to contain only digits
+  // incorrectly rejects legitimate payment QRs.
+  if (!payload.startsWith("000201")) return null;
   const fields = parseTlv(payload);
   if (!fields) return { format: "EMV MPM", validStructure: false, validCrc: false, fields: {} };
   const suppliedCrc = fields["63"];
@@ -151,8 +155,8 @@ export async function analyzePayload(payloadInput, options = {}) {
   }
 
   if (paymentContext) {
-    if (!paymentContext.validStructure) indicators.push(indicator("emv_structure", "Payment context", "high", 30, "Malformed payment structure", "The payload resembles EMV MPM but its TLV fields cannot be parsed safely.", "EMV TLV parse failed"));
-    if (paymentContext.validStructure && !paymentContext.validCrc) indicators.push(indicator("emv_crc", "Payment context", "high", 35, "Invalid EMV checksum", "The payload checksum does not match its encoded payment data.", "CRC mismatch"));
+    if (!paymentContext.validStructure) indicators.push(indicator("emv_structure", "Payment context", "high", 40, "Malformed payment structure", "The payload resembles EMV MPM but its TLV fields cannot be parsed safely.", "EMV TLV parse failed"));
+    if (paymentContext.validStructure && !paymentContext.validCrc) indicators.push(indicator("emv_crc", "Payment context", "high", 40, "Invalid EMV checksum", "The payload checksum does not match its encoded payment data.", "CRC mismatch"));
     if (paymentContext.missingFields?.length) indicators.push(indicator("emv_required", "Payment context", "medium", 18, "Required payment fields are missing", "The payment payload is missing expected merchant or transaction context.", paymentContext.missingFields.join(", ")));
   } else if (!parsedUrl) {
     indicators.push(indicator("non_payment", "Payment context", "medium", 40, "Unrecognized payment payload", "The content is neither a valid URL, supported payment deep link, nor an EMV merchant-presented payment payload.", payload.slice(0, 80)));

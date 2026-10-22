@@ -18,6 +18,31 @@ if (!globalStore[globalKey]) {
 }
 
 const pool = globalStore[globalKey];
+const analyticsSchemaKey = Symbol.for("qr-sentinel.analytics-schema");
+
+async function ensureAnalyticsSchema() {
+  if (!globalStore[analyticsSchemaKey]) {
+    globalStore[analyticsSchemaKey] = pool.query(`
+      ALTER TABLE scans ADD COLUMN IF NOT EXISTS user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'scans_user_id_fkey') THEN
+          ALTER TABLE scans ADD CONSTRAINT scans_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL;
+        END IF;
+      END $$;
+      CREATE INDEX IF NOT EXISTS idx_scans_user_created_at ON scans(user_id, created_at DESC);
+      CREATE TABLE IF NOT EXISTS audit_logs (
+        id TEXT PRIMARY KEY,
+        user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+        action TEXT NOT NULL,
+        detail_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_user_created_at ON audit_logs(user_id, created_at DESC);
+    `);
+  }
+  await globalStore[analyticsSchemaKey];
+}
 
 function passwordHash(password, salt) {
   return scryptSync(password, salt, 64).toString("hex");
@@ -62,6 +87,7 @@ function hydrateScan(row) {
     latencyMs: Number(row.latency_ms),
     createdAt: new Date(row.created_at).toISOString(),
     expectedLabel: row.expected_label,
+    userId: row.user_id,
     recommendation,
   };
 }
@@ -154,6 +180,7 @@ export async function findIocMatches({ urls = [], domains = [], ips = [] }) {
 }
 
 export async function saveScan(result, input) {
+  await ensureAnalyticsSchema();
   const id = randomUUID();
   const createdAt = new Date().toISOString();
   await pool.query(`
@@ -161,21 +188,24 @@ export async function saveScan(result, input) {
       id, created_at, payload_hash, payload_preview, payload_type,
       normalized_url, domain, risk_score, classification, indicators_json,
       observables_json, payment_context_json, redirect_chain_json, latency_ms,
-      source, expected_label
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12::jsonb, $13::jsonb, $14, $15, $16)
+      source, expected_label, user_id
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12::jsonb, $13::jsonb, $14, $15, $16, $17)
   `, [
     id, createdAt, result.payloadHash, result.payloadPreview, result.payloadType,
     result.normalizedUrl || null, result.domain || null, result.riskScore,
     result.classification, JSON.stringify(result.indicators), JSON.stringify(result.observables),
     JSON.stringify(result.paymentContext), JSON.stringify(result.redirectChain), result.latencyMs,
-    input.source || "manual", input.expectedLabel || null,
+    input.source || "manual", input.expectedLabel || null, input.userId || null,
   ]);
-  return { ...result, id, createdAt, source: input.source || "manual", expectedLabel: input.expectedLabel || null };
+  return { ...result, id, createdAt, source: input.source || "manual", expectedLabel: input.expectedLabel || null, userId: input.userId || null };
 }
 
-export async function listScans(limit = 30) {
+export async function listScans(limit = 30, userId = null) {
+  await ensureAnalyticsSchema();
   const safeLimit = Math.min(Math.max(Number(limit) || 30, 1), 200);
-  const result = await pool.query("SELECT * FROM scans ORDER BY created_at DESC LIMIT $1", [safeLimit]);
+  const result = userId
+    ? await pool.query(`SELECT scans.*, users.username FROM scans LEFT JOIN users ON users.id = scans.user_id WHERE scans.user_id = $1 ORDER BY scans.created_at DESC LIMIT $2`, [userId, safeLimit])
+    : await pool.query(`SELECT scans.*, users.username FROM scans LEFT JOIN users ON users.id = scans.user_id ORDER BY scans.created_at DESC LIMIT $1`, [safeLimit]);
   return result.rows.map(hydrateScan);
 }
 
@@ -207,7 +237,10 @@ export async function addIoc(input) {
   return result.rows[0];
 }
 
-export async function getStats() {
+export async function getStats(userId = null) {
+  await ensureAnalyticsSchema();
+  const where = userId ? " WHERE user_id = $1" : "";
+  const parameters = userId ? [userId] : [];
   const [summaryResult, latenciesResult, labeledResult] = await Promise.all([
     pool.query(`
       SELECT COUNT(*)::int total,
@@ -215,10 +248,10 @@ export async function getStats() {
         COUNT(*) FILTER (WHERE classification = 'Suspicious')::int suspicious,
         COUNT(*) FILTER (WHERE classification = 'Malicious')::int malicious,
         COALESCE(ROUND(AVG(latency_ms)::numeric, 2), 0)::float8 mean_latency
-      FROM scans
-    `),
-    pool.query("SELECT latency_ms FROM scans ORDER BY latency_ms"),
-    pool.query("SELECT classification, expected_label FROM scans WHERE expected_label IS NOT NULL"),
+      FROM scans${where}
+    `, parameters),
+    pool.query(`SELECT latency_ms FROM scans${where} ORDER BY latency_ms`, parameters),
+    pool.query(`SELECT classification, expected_label FROM scans${userId ? " WHERE user_id = $1 AND expected_label IS NOT NULL" : " WHERE expected_label IS NOT NULL"}`, parameters),
   ]);
   const summary = summaryResult.rows[0];
   const latencies = latenciesResult.rows.map((row) => Number(row.latency_ms));
@@ -235,7 +268,7 @@ export async function getStats() {
   const ratio = (a, b) => (b ? Number((a / b).toFixed(4)) : null);
   const precision = ratio(tp, tp + fp);
   const recall = ratio(tp, tp + fn);
-  return {
+  const stats = {
     total: summary.total || 0,
     safe: summary.safe || 0,
     suspicious: summary.suspicious || 0,
@@ -253,5 +286,91 @@ export async function getStats() {
       falseNegativeRate: ratio(fn, fn + tp),
     },
   };
+  if (!userId) {
+    const [usersResult, todayResult, dailyResult, topUsersResult] = await Promise.all([
+      pool.query(`
+        SELECT COUNT(*)::int total_users,
+          COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM scans WHERE scans.user_id = users.id))::int active_users
+        FROM users WHERE role = 'user'
+      `),
+      pool.query("SELECT COUNT(*)::int total FROM scans WHERE created_at >= date_trunc('day', NOW())"),
+      pool.query(`
+        SELECT day::date::text day, COUNT(scans.id)::int total
+        FROM generate_series(date_trunc('day', NOW()) - interval '6 days', date_trunc('day', NOW()), interval '1 day') day
+        LEFT JOIN scans ON scans.created_at >= day AND scans.created_at < day + interval '1 day'
+        GROUP BY day ORDER BY day
+      `),
+      pool.query(`
+        SELECT users.id, users.username, COUNT(scans.id)::int total
+        FROM users LEFT JOIN scans ON scans.user_id = users.id
+        WHERE users.role = 'user'
+        GROUP BY users.id, users.username
+        ORDER BY total DESC, users.username ASC LIMIT 5
+      `),
+    ]);
+    const userSummary = usersResult.rows[0];
+    const dailyScans = dailyResult.rows;
+    stats.admin = {
+      totalUsers: userSummary.total_users || 0,
+      activeUsers: userSummary.active_users || 0,
+      scansToday: todayResult.rows[0].total || 0,
+      scansLast7Days: dailyScans.reduce((sum, item) => sum + item.total, 0),
+      averageScansPerUser: userSummary.total_users ? Number((stats.total / userSummary.total_users).toFixed(1)) : 0,
+      dailyScans,
+      topUsers: topUsersResult.rows,
+    };
+  }
+  return stats;
+}
+
+export async function logActivity(userId, action, detail = {}) {
+  await ensureAnalyticsSchema();
+  const activity = { id: randomUUID(), userId: userId || null, action, detail, createdAt: new Date().toISOString() };
+  await pool.query("INSERT INTO audit_logs (id, user_id, action, detail_json, created_at) VALUES ($1, $2, $3, $4::jsonb, $5)", [activity.id, activity.userId, activity.action, JSON.stringify(activity.detail), activity.createdAt]);
+  return activity;
+}
+
+export async function listActivity(limit = 100, userId = null) {
+  await ensureAnalyticsSchema();
+  const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 300);
+  const result = userId
+    ? await pool.query(`SELECT audit_logs.*, users.username, users.role FROM audit_logs LEFT JOIN users ON users.id = audit_logs.user_id WHERE audit_logs.user_id = $1 ORDER BY audit_logs.created_at DESC LIMIT $2`, [userId, safeLimit])
+    : await pool.query(`SELECT audit_logs.*, users.username, users.role FROM audit_logs LEFT JOIN users ON users.id = audit_logs.user_id ORDER BY audit_logs.created_at DESC LIMIT $1`, [safeLimit]);
+  return result.rows.map((row) => ({
+    id: row.id,
+    userId: row.user_id,
+    username: row.username || "System",
+    role: row.role || "system",
+    action: row.action,
+    detail: jsonValue(row.detail_json, {}),
+    createdAt: new Date(row.created_at).toISOString(),
+  }));
+}
+
+export async function listUsers() {
+  await ensureAnalyticsSchema();
+  const result = await pool.query(`
+    SELECT users.id, users.username, users.email, users.role, users.created_at,
+      COUNT(scans.id)::int scan_count,
+      COUNT(scans.id) FILTER (WHERE scans.classification = 'Safe')::int safe_count,
+      COUNT(scans.id) FILTER (WHERE scans.classification IN ('Suspicious', 'Malicious'))::int risky_count,
+      MAX(scans.created_at) last_scan_at,
+      (SELECT MAX(audit_logs.created_at) FROM audit_logs WHERE audit_logs.user_id = users.id) last_activity_at
+    FROM users LEFT JOIN scans ON scans.user_id = users.id
+    GROUP BY users.id, users.username, users.email, users.role, users.created_at
+    ORDER BY users.created_at DESC
+  `);
+  return result.rows.map((row) => ({
+    id: row.id,
+    username: row.username,
+    email: row.email,
+    role: row.role,
+    createdAt: new Date(row.created_at).toISOString(),
+    scanCount: row.scan_count || 0,
+    safeCount: row.safe_count || 0,
+    riskyCount: row.risky_count || 0,
+    lastScanAt: row.last_scan_at ? new Date(row.last_scan_at).toISOString() : null,
+    lastActivityAt: row.last_activity_at ? new Date(row.last_activity_at).toISOString() : null,
+  }));
 }
 

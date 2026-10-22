@@ -65,7 +65,63 @@ test("protects application data and supports login, registration, and logout", a
     body: JSON.stringify({ username: "new_user", email: "new.user@gmail.com", password: "secure-pass-123" }),
   });
   assert.equal(registration.status, 201);
-  assert.equal((await registration.json()).user.role, "user");
+  const registrationBody = await registration.json();
+  assert.equal(registrationBody.user.role, "user");
+  const userCookie = registration.headers.get("set-cookie")?.split(";", 1)[0];
+  assert.ok(userCookie);
+
+  const userScan = await fetch(`${api.baseUrl}/api/analyze`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie: userCookie },
+    body: JSON.stringify({ payload: "https://pay.example.com/checkout?amount=100", resolveRedirects: false, source: "test" }),
+  });
+  assert.equal(userScan.status, 201);
+
+  const userScans = await fetch(`${api.baseUrl}/api/scans`, { headers: { cookie: userCookie } });
+  assert.equal(userScans.status, 200);
+  const userScansBody = await userScans.json();
+  assert.equal(userScansBody.scans.length, 1);
+  assert.equal(userScansBody.scans[0].userId, registrationBody.user.id);
+
+  const userStats = await fetch(`${api.baseUrl}/api/stats`, { headers: { cookie: userCookie } });
+  assert.equal(userStats.status, 200);
+  const userStatsBody = await userStats.json();
+  assert.equal(userStatsBody.total, 1);
+  assert.equal(userStatsBody.admin, undefined);
+
+  const userActivity = await fetch(`${api.baseUrl}/api/activity`, { headers: { cookie: userCookie } });
+  assert.equal(userActivity.status, 200);
+  const userActivityBody = await userActivity.json();
+  assert.ok(userActivityBody.activity.some((item) => item.action === "qr_scanned"));
+  assert.ok(userActivityBody.activity.every((item) => item.userId === registrationBody.user.id));
+
+  const forbiddenUsers = await fetch(`${api.baseUrl}/api/users`, { headers: { cookie: userCookie } });
+  assert.equal(forbiddenUsers.status, 403);
+
+  const adminScans = await fetch(`${api.baseUrl}/api/scans`, { headers: { cookie: adminCookie } });
+  assert.equal(adminScans.status, 200);
+  assert.ok((await adminScans.json()).scans.some((scan) => scan.username === "new_user"));
+
+  const adminStats = await fetch(`${api.baseUrl}/api/stats`, { headers: { cookie: adminCookie } });
+  assert.equal(adminStats.status, 200);
+  const adminStatsBody = await adminStats.json();
+  assert.equal(adminStatsBody.total, 1);
+  assert.equal(adminStatsBody.admin.totalUsers, 1);
+
+  const users = await fetch(`${api.baseUrl}/api/users`, { headers: { cookie: adminCookie } });
+  assert.equal(users.status, 200);
+  assert.ok((await users.json()).users.some((item) => item.username === "new_user" && item.scanCount === 1));
+
+  const selectedUserActivity = await fetch(`${api.baseUrl}/api/activity?userId=${registrationBody.user.id}`, { headers: { cookie: adminCookie } });
+  assert.equal(selectedUserActivity.status, 200);
+  assert.ok((await selectedUserActivity.json()).activity.every((item) => item.userId === registrationBody.user.id));
+
+  const forbiddenIndicator = await fetch(`${api.baseUrl}/api/iocs`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie: userCookie },
+    body: JSON.stringify({ indicator: "blocked.example", indicatorType: "domain" }),
+  });
+  assert.equal(forbiddenIndicator.status, 403);
 
   const duplicate = await fetch(`${api.baseUrl}/api/auth/register`, {
     method: "POST",

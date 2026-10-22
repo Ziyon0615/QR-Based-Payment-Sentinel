@@ -72,6 +72,25 @@ if (!userColumns.some((column) => column.name === "email")) {
 }
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL");
 
+const scanColumns = db.prepare("PRAGMA table_info(scans)").all();
+if (!scanColumns.some((column) => column.name === "user_id")) {
+  db.exec("ALTER TABLE scans ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE SET NULL");
+}
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_scans_user_created_at ON scans(user_id, created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS audit_logs (
+    id TEXT PRIMARY KEY,
+    user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    action TEXT NOT NULL,
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_audit_logs_user_created_at ON audit_logs(user_id, created_at DESC);
+`);
+
 function passwordHash(password, salt) {
   return scryptSync(password, salt, 64).toString("hex");
 }
@@ -185,6 +204,7 @@ function hydrateScan(row) {
     latencyMs: row.latency_ms,
     createdAt: row.created_at,
     expectedLabel: row.expected_label,
+    userId: row.user_id,
     recommendation,
   };
 }
@@ -211,8 +231,8 @@ export function saveScan(result, input) {
       id, created_at, payload_hash, payload_preview, payload_type,
       normalized_url, domain, risk_score, classification, indicators_json,
       observables_json, payment_context_json, redirect_chain_json, latency_ms,
-      source, expected_label
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      source, expected_label, user_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     createdAt,
@@ -230,13 +250,17 @@ export function saveScan(result, input) {
     result.latencyMs,
     input.source || "manual",
     input.expectedLabel || null,
+    input.userId || null,
   );
-  return { ...result, id, createdAt, source: input.source || "manual", expectedLabel: input.expectedLabel || null };
+  return { ...result, id, createdAt, source: input.source || "manual", expectedLabel: input.expectedLabel || null, userId: input.userId || null };
 }
 
-export function listScans(limit = 30) {
+export function listScans(limit = 30, userId = null) {
   const safeLimit = Math.min(Math.max(Number(limit) || 30, 1), 200);
-  return db.prepare("SELECT * FROM scans ORDER BY created_at DESC LIMIT ?").all(safeLimit).map(hydrateScan);
+  const rows = userId
+    ? db.prepare(`SELECT scans.*, users.username FROM scans LEFT JOIN users ON users.id = scans.user_id WHERE scans.user_id = ? ORDER BY scans.created_at DESC LIMIT ?`).all(userId, safeLimit)
+    : db.prepare(`SELECT scans.*, users.username FROM scans LEFT JOIN users ON users.id = scans.user_id ORDER BY scans.created_at DESC LIMIT ?`).all(safeLimit);
+  return rows.map(hydrateScan);
 }
 
 export function listIocs() {
@@ -272,7 +296,9 @@ export function addIoc(input) {
   return db.prepare("SELECT * FROM iocs WHERE indicator_type = ? AND lower(indicator) = lower(?)").get(input.indicatorType, input.indicator.trim());
 }
 
-export function getStats() {
+export function getStats(userId = null) {
+  const where = userId ? " WHERE user_id = ?" : "";
+  const parameters = userId ? [userId] : [];
   const summary = db.prepare(`
     SELECT COUNT(*) total,
       SUM(CASE WHEN classification = 'Safe' THEN 1 ELSE 0 END) safe,
@@ -280,10 +306,12 @@ export function getStats() {
       SUM(CASE WHEN classification = 'Malicious' THEN 1 ELSE 0 END) malicious,
       ROUND(AVG(latency_ms), 2) mean_latency
     FROM scans
-  `).get();
-  const latencies = db.prepare("SELECT latency_ms FROM scans ORDER BY latency_ms").all().map((row) => row.latency_ms);
+    ${where}
+  `).get(...parameters);
+  const latencies = db.prepare(`SELECT latency_ms FROM scans${where} ORDER BY latency_ms`).all(...parameters).map((row) => row.latency_ms);
   const p95Index = latencies.length ? Math.ceil(latencies.length * 0.95) - 1 : 0;
-  const labeled = db.prepare("SELECT classification, expected_label FROM scans WHERE expected_label IS NOT NULL").all();
+  const labeledWhere = userId ? " WHERE user_id = ? AND expected_label IS NOT NULL" : " WHERE expected_label IS NOT NULL";
+  const labeled = db.prepare(`SELECT classification, expected_label FROM scans${labeledWhere}`).all(...parameters);
   let tp = 0, tn = 0, fp = 0, fn = 0;
   for (const row of labeled) {
     const actualPositive = row.expected_label !== "Safe";
@@ -296,7 +324,7 @@ export function getStats() {
   const ratio = (a, b) => (b ? Number((a / b).toFixed(4)) : null);
   const precision = ratio(tp, tp + fp);
   const recall = ratio(tp, tp + fn);
-  return {
+  const stats = {
     total: summary.total || 0,
     safe: summary.safe || 0,
     suspicious: summary.suspicious || 0,
@@ -314,4 +342,88 @@ export function getStats() {
       falseNegativeRate: ratio(fn, fn + tp),
     },
   };
+  if (!userId) {
+    const userSummary = db.prepare(`
+      SELECT COUNT(*) total_users,
+        SUM(CASE WHEN EXISTS (SELECT 1 FROM scans WHERE scans.user_id = users.id) THEN 1 ELSE 0 END) active_users
+      FROM users WHERE role = 'user'
+    `).get();
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    const sevenDaysAgo = new Date(today);
+    sevenDaysAgo.setUTCDate(sevenDaysAgo.getUTCDate() - 6);
+    const dailyRows = db.prepare(`SELECT substr(created_at, 1, 10) day, COUNT(*) total FROM scans WHERE created_at >= ? GROUP BY day ORDER BY day`).all(sevenDaysAgo.toISOString());
+    const dailyMap = new Map(dailyRows.map((row) => [row.day, row.total]));
+    const dailyScans = Array.from({ length: 7 }, (_, index) => {
+      const date = new Date(sevenDaysAgo);
+      date.setUTCDate(date.getUTCDate() + index);
+      const day = date.toISOString().slice(0, 10);
+      return { day, total: dailyMap.get(day) || 0 };
+    });
+    const topUsers = db.prepare(`
+      SELECT users.id, users.username, COUNT(scans.id) total
+      FROM users LEFT JOIN scans ON scans.user_id = users.id
+      WHERE users.role = 'user'
+      GROUP BY users.id, users.username
+      ORDER BY total DESC, users.username ASC LIMIT 5
+    `).all();
+    stats.admin = {
+      totalUsers: userSummary.total_users || 0,
+      activeUsers: userSummary.active_users || 0,
+      scansToday: db.prepare("SELECT COUNT(*) total FROM scans WHERE created_at >= ?").get(today.toISOString()).total,
+      scansLast7Days: dailyScans.reduce((sum, item) => sum + item.total, 0),
+      averageScansPerUser: userSummary.total_users ? Number((stats.total / userSummary.total_users).toFixed(1)) : 0,
+      dailyScans,
+      topUsers,
+    };
+  }
+  return stats;
+}
+
+export function logActivity(userId, action, detail = {}) {
+  const activity = { id: randomUUID(), userId: userId || null, action, detail, createdAt: new Date().toISOString() };
+  db.prepare("INSERT INTO audit_logs (id, user_id, action, detail_json, created_at) VALUES (?, ?, ?, ?, ?)")
+    .run(activity.id, activity.userId, activity.action, JSON.stringify(activity.detail), activity.createdAt);
+  return activity;
+}
+
+export function listActivity(limit = 100, userId = null) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 300);
+  const rows = userId
+    ? db.prepare(`SELECT audit_logs.*, users.username, users.role FROM audit_logs LEFT JOIN users ON users.id = audit_logs.user_id WHERE audit_logs.user_id = ? ORDER BY audit_logs.created_at DESC LIMIT ?`).all(userId, safeLimit)
+    : db.prepare(`SELECT audit_logs.*, users.username, users.role FROM audit_logs LEFT JOIN users ON users.id = audit_logs.user_id ORDER BY audit_logs.created_at DESC LIMIT ?`).all(safeLimit);
+  return rows.map((row) => ({
+    id: row.id,
+    userId: row.user_id,
+    username: row.username || "System",
+    role: row.role || "system",
+    action: row.action,
+    detail: safeJson(row.detail_json, {}),
+    createdAt: row.created_at,
+  }));
+}
+
+export function listUsers() {
+  return db.prepare(`
+    SELECT users.id, users.username, users.email, users.role, users.created_at,
+      COUNT(scans.id) scan_count,
+      SUM(CASE WHEN scans.classification = 'Safe' THEN 1 ELSE 0 END) safe_count,
+      SUM(CASE WHEN scans.classification IN ('Suspicious', 'Malicious') THEN 1 ELSE 0 END) risky_count,
+      MAX(scans.created_at) last_scan_at,
+      (SELECT MAX(audit_logs.created_at) FROM audit_logs WHERE audit_logs.user_id = users.id) last_activity_at
+    FROM users LEFT JOIN scans ON scans.user_id = users.id
+    GROUP BY users.id, users.username, users.email, users.role, users.created_at
+    ORDER BY users.created_at DESC
+  `).all().map((row) => ({
+    id: row.id,
+    username: row.username,
+    email: row.email,
+    role: row.role,
+    createdAt: row.created_at,
+    scanCount: row.scan_count || 0,
+    safeCount: row.safe_count || 0,
+    riskyCount: row.risky_count || 0,
+    lastScanAt: row.last_scan_at,
+    lastActivityAt: row.last_activity_at,
+  }));
 }

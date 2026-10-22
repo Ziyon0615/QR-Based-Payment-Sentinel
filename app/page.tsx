@@ -10,6 +10,7 @@ type Classification = "Safe" | "Suspicious" | "Malicious";
 type Indicator = { id: string; category: string; severity: string; score: number; title: string; detail: string; evidence: string };
 type Scan = {
   id: string; createdAt: string; payloadPreview: string; payloadType: string;
+  userId?: string | null; username?: string | null;
   normalizedUrl?: string | null; domain?: string | null; riskScore: number;
   classification: Classification; recommendation: string; latencyMs: number;
   source: string; expectedLabel?: string | null; indicators: Indicator[];
@@ -19,9 +20,16 @@ type Scan = {
 };
 type Stats = {
   total: number; safe: number; suspicious: number; malicious: number; meanLatencyMs: number; p95LatencyMs: number;
+  admin?: {
+    totalUsers: number; activeUsers: number; scansToday: number; scansLast7Days: number; averageScansPerUser: number;
+    dailyScans: { day: string; total: number }[];
+    topUsers: { id: string; username: string; total: number }[];
+  };
 };
 type Ioc = { id: string; indicator: string; indicator_type: string; severity: string; confidence: number; source: string; active: number };
 type User = { id: string; username: string; email?: string | null; role: string; createdAt: string };
+type UserSummary = User & { scanCount: number; safeCount: number; riskyCount: number; lastScanAt?: string | null; lastActivityAt?: string | null };
+type Activity = { id: string; userId?: string | null; username: string; role: string; action: string; detail: Record<string, string | number>; createdAt: string };
 
 const emptyStats: Stats = {
   total: 0, safe: 0, suspicious: 0, malicious: 0, meanLatencyMs: 0, p95LatencyMs: 0,
@@ -48,6 +56,9 @@ export default function Home() {
   const [history, setHistory] = useState<Scan[]>([]);
   const [stats, setStats] = useState<Stats>(emptyStats);
   const [iocs, setIocs] = useState<Ioc[]>([]);
+  const [users, setUsers] = useState<UserSummary[]>([]);
+  const [activity, setActivity] = useState<Activity[]>([]);
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [cameraOn, setCameraOn] = useState(false);
@@ -62,16 +73,31 @@ export default function Home() {
 
   const refresh = useCallback(async () => {
     try {
-      const [healthResponse, scansResponse, statsResponse, iocsResponse] = await Promise.all([
-        apiFetch("/api/health"), apiFetch("/api/scans?limit=50"), apiFetch("/api/stats"), apiFetch("/api/iocs"),
+      const isAdmin = user?.role === "admin";
+      const activityPath = `/api/activity?limit=100${isAdmin && selectedUserId ? `&userId=${encodeURIComponent(selectedUserId)}` : ""}`;
+      const [healthResponse, scansResponse, statsResponse, activityResponse, iocsResponse, usersResponse] = await Promise.all([
+        apiFetch("/api/health"),
+        apiFetch("/api/scans?limit=50"),
+        apiFetch("/api/stats"),
+        apiFetch(activityPath),
+        isAdmin ? apiFetch("/api/iocs") : Promise.resolve(null),
+        isAdmin ? apiFetch("/api/users") : Promise.resolve(null),
       ]);
       setOnline(healthResponse.ok);
       if (scansResponse.status === 401) { setUser(null); setAuthStatus("guest"); return; }
       if (scansResponse.ok) setHistory((await scansResponse.json()).scans);
       if (statsResponse.ok) setStats(await statsResponse.json());
-      if (iocsResponse.ok) setIocs((await iocsResponse.json()).iocs);
+      if (activityResponse.ok) setActivity((await activityResponse.json()).activity);
+      if (iocsResponse?.ok) setIocs((await iocsResponse.json()).iocs);
+      if (usersResponse?.ok) setUsers((await usersResponse.json()).users);
     } catch { setOnline(false); }
-  }, []);
+  }, [selectedUserId, user?.role]);
+
+  async function showUserActivity(userId: string | null) {
+    setSelectedUserId(userId);
+    const response = await apiFetch(`/api/activity?limit=100${userId ? `&userId=${encodeURIComponent(userId)}` : ""}`);
+    if (response.ok) setActivity((await response.json()).activity);
+  }
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -192,25 +218,22 @@ export default function Home() {
 
   async function logout() {
     await apiFetch("/api/auth/logout", { method: "POST" });
-    stopCamera(); setUser(null); setAuthStatus("guest"); setHistory([]); setStats(emptyStats); setIocs([]); setResult(null);
+    stopCamera(); setUser(null); setAuthStatus("guest"); setHistory([]); setStats(emptyStats); setIocs([]); setUsers([]); setActivity([]); setSelectedUserId(null); setResult(null);
   }
 
   if (authStatus === "loading") return <AuthLoading />;
   if (authStatus === "guest") return <AuthScreen mode={authMode} form={authForm} message={authMessage} busy={authBusy} onModeChange={(mode) => { setAuthMode(mode); setAuthMessage(""); }} onFormChange={setAuthForm} onSubmit={submitAuthentication} />;
+  const visibleNavItems = user?.role === "admin" ? navItems : navItems.filter(([key]) => key !== "intel");
 
   return (
     <main className="app-shell">
       <header className="topbar">
         <button className="brand" onClick={() => setView("scan")} aria-label="Open scanner"><span className="brand-mark"><span>Q</span></span><span><strong>QRBased</strong><small>Sentinel</small></span></button>
-        <nav className="desktop-nav" aria-label="Main navigation">{navItems.map(([key, label]) => <button key={key} className={view === key ? "active" : ""} onClick={() => setView(key)}>{label}</button>)}</nav>
+        <nav className="desktop-nav" aria-label="Main navigation">{visibleNavItems.map(([key, label]) => <button key={key} className={view === key ? "active" : ""} onClick={() => setView(key)}>{label}</button>)}</nav>
         <div className="account-area"><div className={`service-state ${online ? "online" : "offline"}`}><span />{online ? "Protection active" : "API offline"}</div><button className="account-button" onClick={logout} title="Sign out"><span>{user?.username.slice(0, 1).toUpperCase()}</span><div><strong>{user?.username}</strong><small>{user?.role}</small></div><b>↪</b></button></div>
       </header>
 
-      {view === "dashboard" && <div className="page data-page dashboard-page">
-        <div className="page-title"><div><p className="eyebrow">SECURITY OVERVIEW</p><h1>Analytics dashboard</h1><p>Monitor scan activity, risk classifications, and system performance from one view.</p></div><button className="primary-action" onClick={() => setView("scan")}>Scan a QR code</button></div>
-        <div className="dashboard-kpis"><Metric label="Total scans" value={stats.total} /><Metric label="Safe rate" value={percentage(stats.safe, stats.total)} tone="safe" /><Metric label="Suspicious" value={stats.suspicious} tone="suspicious" /><Metric label="Malicious" value={stats.malicious} tone="malicious" /><Metric label="Average latency" value={`${stats.meanLatencyMs.toFixed(0)} ms`} /><Metric label="P95 latency" value={`${stats.p95LatencyMs.toFixed(0)} ms`} /></div>
-        <div className="dashboard-grid"><section className="panel analytics-panel"><div className="panel-title"><div><p className="eyebrow">RISK DISTRIBUTION</p><h2>Classification overview</h2></div></div><div className="distribution-list"><div><span><b>Safe</b><small>{stats.safe} scans</small></span><i><em className="safe" style={{ width: percentage(stats.safe, stats.total) }} /></i><strong>{percentage(stats.safe, stats.total)}</strong></div><div><span><b>Suspicious</b><small>{stats.suspicious} scans</small></span><i><em className="suspicious" style={{ width: percentage(stats.suspicious, stats.total) }} /></i><strong>{percentage(stats.suspicious, stats.total)}</strong></div><div><span><b>Malicious</b><small>{stats.malicious} scans</small></span><i><em className="malicious" style={{ width: percentage(stats.malicious, stats.total) }} /></i><strong>{percentage(stats.malicious, stats.total)}</strong></div></div></section><section className="panel recent-panel"><div className="panel-title"><div><p className="eyebrow">RECENT ACTIVITY</p><h2>Latest scans</h2></div><button onClick={() => setView("history")}>View all</button></div><div className="recent-list">{history.slice(0, 5).map((scan) => <button key={scan.id} onClick={() => { setResult(scan); setView("scan"); }}><StatusPill value={scan.classification} /><span><strong>{scan.domain || shortText(scan.payloadPreview, 34)}</strong><small>{new Date(scan.createdAt).toLocaleString()}</small></span><b>{scan.riskScore}</b></button>)}{!history.length && <p>No scan activity yet.</p>}</div></section></div>
-      </div>}
+      {view === "dashboard" && <Dashboard user={user!} stats={stats} history={history} users={users} activity={activity} selectedUserId={selectedUserId} onSelectUser={showUserActivity} onOpenScanner={() => setView("scan")} onOpenHistory={() => setView("history")} onOpenScan={(scan) => { setResult(scan); setView("scan"); }} />}
 
       {view === "scan" && <div className="page scanner-page">
         <section className="intro-row"><div><p className="eyebrow">SCAN-TIME PAYMENT DEFENSE</p><h1>Know what’s behind<br />the code <em>before</em> you pay.</h1><p className="lead">Decode, inspect, and risk-score QR payment payloads without opening their destination.</p></div><div className="privacy-note"><span className="lock-dot">◆</span><div><strong>Privacy-first analysis</strong><small>No credentials. No payments. Suspicious links stay closed.</small></div></div></section>
@@ -244,18 +267,68 @@ export default function Home() {
       {view === "history" && <div className="page data-page">
         <div className="page-title"><div><p className="eyebrow">LOCAL EVIDENCE LOG</p><h1>Scan history</h1><p>Technical results are stored in SQLite for repeatable evaluation. Full payloads are not displayed.</p></div><button className="primary-action" onClick={() => setView("scan")}>New scan</button></div>
         <div className="summary-cards"><Metric label="Total scans" value={stats.total} /><Metric label="Safe" value={stats.safe} tone="safe" /><Metric label="Suspicious" value={stats.suspicious} tone="suspicious" /><Metric label="Malicious" value={stats.malicious} tone="malicious" /></div>
-        <div className="table-card"><div className="table-head"><span>Result</span><span>Payload / destination</span><span>Indicators</span><span>Latency</span><span>Analyzed</span></div>{history.length ? history.map((scan) => <button className="history-row" key={scan.id} onClick={() => { setResult(scan); setView("scan"); }}><span><StatusPill value={scan.classification} /><b>{scan.riskScore}/100</b></span><span><strong>{scan.domain || shortText(scan.payloadPreview)}</strong><small>{scan.payloadType.replaceAll("_", " ")}</small></span><span>{scan.indicators.length}</span><span>{scan.latencyMs.toFixed(0)} ms</span><span>{new Date(scan.createdAt).toLocaleString()}</span></button>) : <div className="empty-table">No scans recorded yet. Analyze a controlled sample to begin.</div>}</div>
+        <div className="table-card"><div className="table-head"><span>Result</span><span>Payload / destination</span><span>Indicators</span><span>Latency</span><span>Analyzed</span></div>{history.length ? history.map((scan) => <button className="history-row" key={scan.id} onClick={() => { setResult(scan); setView("scan"); }}><span><StatusPill value={scan.classification} /><b>{scan.riskScore}/100</b></span><span><strong>{scan.domain || shortText(scan.payloadPreview)}</strong><small>{scan.username ? `${scan.username} · ` : ""}{scan.payloadType.replaceAll("_", " ")}</small></span><span>{scan.indicators.length}</span><span>{scan.latencyMs.toFixed(0)} ms</span><span>{new Date(scan.createdAt).toLocaleString()}</span></button>) : <div className="empty-table">No scans recorded yet. Analyze a controlled sample to begin.</div>}</div>
       </div>}
 
-      {view === "intel" && <div className="page data-page">
+      {view === "intel" && user?.role === "admin" && <div className="page data-page">
         <div className="page-title"><div><p className="eyebrow">LOCAL CTI STORE</p><h1>Threat intelligence</h1><p>Add controlled research indicators. Matches contribute to the risk score without opening the destination.</p></div><span className="research-badge">{iocs.filter((item) => item.active).length} active IoCs</span></div>
         <div className="intel-grid"><form className="panel ioc-form" onSubmit={addIndicator}><div className="panel-title"><div><p className="eyebrow">NEW INDICATOR</p><h2>Add to local intelligence</h2></div></div><label>Indicator<input value={iocDraft.indicator} onChange={(event) => setIocDraft({ ...iocDraft, indicator: event.target.value })} placeholder="domain.example or full URL" /></label><div className="form-row"><label>Type<select value={iocDraft.indicatorType} onChange={(event) => setIocDraft({ ...iocDraft, indicatorType: event.target.value })}><option value="domain">Domain</option><option value="url">URL</option><option value="ip">IP address</option></select></label><label>Severity<select value={iocDraft.severity} onChange={(event) => setIocDraft({ ...iocDraft, severity: event.target.value })}><option>critical</option><option>high</option><option>medium</option></select></label></div><label>Source<input value={iocDraft.source} onChange={(event) => setIocDraft({ ...iocDraft, source: event.target.value })} /></label><button className="analyze-button">Save indicator<span>＋</span></button></form><section className="panel"><div className="panel-title"><div><p className="eyebrow">ACTIVE FEED</p><h2>Indicators of Compromise</h2></div></div><div className="ioc-list">{iocs.map((ioc) => <article key={ioc.id}><span className={`severity-dot ${ioc.severity}`} /><div><strong>{ioc.indicator}</strong><small>{ioc.indicator_type} · {ioc.source}</small></div><b>{ioc.confidence}%</b></article>)}</div></section></div>
       </div>}
 
-      <nav className="mobile-nav" aria-label="Mobile navigation">{navItems.map(([key, label]) => <button key={key} className={view === key ? "active" : ""} onClick={() => setView(key)}><span>{key === "dashboard" ? "▦" : key === "scan" ? "⌁" : key === "history" ? "◷" : "◇"}</span>{label.split(" ")[0]}</button>)}</nav>
+      <nav className={`mobile-nav ${visibleNavItems.length === 3 ? "three-items" : ""}`} aria-label="Mobile navigation">{visibleNavItems.map(([key, label]) => <button key={key} className={view === key ? "active" : ""} onClick={() => setView(key)}><span>{key === "dashboard" ? "▦" : key === "scan" ? "⌁" : key === "history" ? "◷" : "◇"}</span>{label.split(" ")[0]}</button>)}</nav>
       <footer><span>QRBased Sentinel · Payment QR security</span><span>No financial transactions are processed.</span></footer>
     </main>
   );
+}
+
+const activityLabels: Record<string, string> = {
+  account_created: "Created an account",
+  signed_in: "Signed in",
+  signed_out: "Signed out",
+  qr_scanned: "Analyzed a QR code",
+  indicator_added: "Added a threat indicator",
+};
+
+function Dashboard({ user, stats, history, users, activity, selectedUserId, onSelectUser, onOpenScanner, onOpenHistory, onOpenScan }: {
+  user: User;
+  stats: Stats;
+  history: Scan[];
+  users: UserSummary[];
+  activity: Activity[];
+  selectedUserId: string | null;
+  onSelectUser: (userId: string | null) => void;
+  onOpenScanner: () => void;
+  onOpenHistory: () => void;
+  onOpenScan: (scan: Scan) => void;
+}) {
+  const isAdmin = user.role === "admin";
+  const admin = stats.admin;
+  const maxDaily = Math.max(1, ...(admin?.dailyScans.map((item) => item.total) || [1]));
+  const selectedUser = users.find((item) => item.id === selectedUserId);
+
+  return <div className="page data-page dashboard-page">
+    <div className="page-title"><div><p className="eyebrow">{isAdmin ? "ADMIN CONTROL CENTER" : "YOUR SECURITY ACTIVITY"}</p><h1>{isAdmin ? "System analytics" : "Your dashboard"}</h1><p>{isAdmin ? "Review every user, security scan, and account action across the platform." : "Track only your own QR scans, classifications, and recent account activity."}</p></div><button className="primary-action" onClick={onOpenScanner}>Scan a QR code</button></div>
+    <div className="dashboard-kpis">
+      <Metric label={isAdmin ? "All scans" : "Your scans"} value={stats.total} />
+      {isAdmin ? <><Metric label="Registered users" value={admin?.totalUsers || 0} /><Metric label="Active scanners" value={admin?.activeUsers || 0} tone="safe" /><Metric label="Scans today" value={admin?.scansToday || 0} /><Metric label="Risky results" value={stats.suspicious + stats.malicious} tone="suspicious" /><Metric label="Average latency" value={`${stats.meanLatencyMs.toFixed(0)} ms`} /></> : <><Metric label="Safe rate" value={percentage(stats.safe, stats.total)} tone="safe" /><Metric label="Safe" value={stats.safe} tone="safe" /><Metric label="Suspicious" value={stats.suspicious} tone="suspicious" /><Metric label="Malicious" value={stats.malicious} tone="malicious" /><Metric label="Average latency" value={`${stats.meanLatencyMs.toFixed(0)} ms`} /></>}
+    </div>
+    <div className="dashboard-grid">
+      <section className="panel analytics-panel"><div className="panel-title"><div><p className="eyebrow">RISK DISTRIBUTION</p><h2>{isAdmin ? "Platform classifications" : "Your classifications"}</h2></div></div><div className="distribution-list"><div><span><b>Safe</b><small>{stats.safe} scans</small></span><i><em className="safe" style={{ width: percentage(stats.safe, stats.total) }} /></i><strong>{percentage(stats.safe, stats.total)}</strong></div><div><span><b>Suspicious</b><small>{stats.suspicious} scans</small></span><i><em className="suspicious" style={{ width: percentage(stats.suspicious, stats.total) }} /></i><strong>{percentage(stats.suspicious, stats.total)}</strong></div><div><span><b>Malicious</b><small>{stats.malicious} scans</small></span><i><em className="malicious" style={{ width: percentage(stats.malicious, stats.total) }} /></i><strong>{percentage(stats.malicious, stats.total)}</strong></div></div></section>
+      <section className="panel recent-panel"><div className="panel-title"><div><p className="eyebrow">RECENT SCANS</p><h2>{isAdmin ? "Latest across all users" : "Your latest scans"}</h2></div><button onClick={onOpenHistory}>View all</button></div><div className="recent-list">{history.slice(0, 5).map((scan) => <button key={scan.id} onClick={() => onOpenScan(scan)}><StatusPill value={scan.classification} /><span><strong>{scan.domain || shortText(scan.payloadPreview, 34)}</strong><small>{isAdmin && scan.username ? `${scan.username} · ` : ""}{new Date(scan.createdAt).toLocaleString()}</small></span><b>{scan.riskScore}</b></button>)}{!history.length && <p>No scan activity yet.</p>}</div></section>
+    </div>
+    {isAdmin && <div className="admin-insights">
+      <section className="panel volume-panel"><div className="panel-title"><div><p className="eyebrow">7-DAY ANALYTICS</p><h2>Scan volume</h2></div><strong>{admin?.scansLast7Days || 0} total</strong></div><div className="volume-chart">{admin?.dailyScans.map((item) => <div key={item.day}><span><i style={{ height: `${Math.max(6, (item.total / maxDaily) * 100)}%` }} /></span><b>{item.total}</b><small>{new Date(`${item.day}T00:00:00`).toLocaleDateString(undefined, { weekday: "short" })}</small></div>)}</div></section>
+      <section className="panel top-users-panel"><div className="panel-title"><div><p className="eyebrow">USER ANALYTICS</p><h2>Top scanners</h2></div><strong>{admin?.averageScansPerUser || 0} avg/user</strong></div><div className="top-users-list">{admin?.topUsers.map((item, index) => <button key={item.id} onClick={() => onSelectUser(item.id)}><span>{index + 1}</span><div><strong>{item.username}</strong><small>{item.total} scan{item.total === 1 ? "" : "s"}</small></div><i style={{ width: percentage(item.total, Math.max(1, stats.total)) }} /></button>)}{!admin?.topUsers.length && <p>No user scans yet.</p>}</div></section>
+    </div>}
+    <div className={`activity-dashboard ${isAdmin ? "admin" : "user"}`}>
+      {isAdmin && <section className="panel user-directory"><div className="panel-title"><div><p className="eyebrow">USER DIRECTORY</p><h2>All accounts</h2></div><span>{users.length} accounts</span></div><div className="user-table"><div className="user-table-head"><span>User</span><span>Scans</span><span>Safe</span><span>Risky</span><span>Last activity</span><span /></div>{users.map((item) => <div className={selectedUserId === item.id ? "selected" : ""} key={item.id}><span className="user-identity"><b>{item.username.slice(0, 1).toUpperCase()}</b><span><strong>{item.username}</strong><small>{item.email || item.role}</small></span></span><span>{item.scanCount}</span><span>{item.safeCount}</span><span>{item.riskyCount}</span><span>{item.lastActivityAt ? new Date(item.lastActivityAt).toLocaleString() : "No activity"}</span><button onClick={() => onSelectUser(item.id)}>View activity</button></div>)}</div></section>}
+      <section className="panel audit-panel"><div className="panel-title"><div><p className="eyebrow">AUDIT LOG</p><h2>{isAdmin ? selectedUser ? `${selectedUser.username}'s activity` : "All user activity" : "Your recent activity"}</h2></div>{isAdmin && selectedUserId && <button onClick={() => onSelectUser(null)}>Show all</button>}</div><ActivityList activity={activity} showUser={isAdmin && !selectedUserId} /></section>
+    </div>
+  </div>;
+}
+
+function ActivityList({ activity, showUser }: { activity: Activity[]; showUser: boolean }) {
+  return <div className="audit-list">{activity.map((item) => <article key={item.id}><span className={`audit-icon ${item.action}`}>{item.action === "qr_scanned" ? "QR" : item.action === "signed_in" ? "IN" : item.action === "signed_out" ? "OUT" : item.action === "account_created" ? "+" : "IOC"}</span><div><strong>{showUser ? `${item.username} · ` : ""}{activityLabels[item.action] || item.action.replaceAll("_", " ")}</strong><small>{item.action === "qr_scanned" && item.detail.classification ? `${item.detail.classification} · risk ${item.detail.riskScore}/100 · ${item.detail.source}` : item.action === "indicator_added" ? `${item.detail.indicatorType}: ${item.detail.indicator}` : item.role}</small></div><time dateTime={item.createdAt}>{new Date(item.createdAt).toLocaleString()}</time></article>)}{!activity.length && <p className="empty-activity">No activity recorded yet.</p>}</div>;
 }
 
 function StatusPill({ value }: { value: Classification }) { return <span className={`status-pill ${value.toLowerCase()}`}><i />{value}</span>; }

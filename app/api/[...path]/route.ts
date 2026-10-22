@@ -7,8 +7,11 @@ import {
   findIocMatches,
   getSessionUser,
   getStats,
+  listActivity,
   listIocs,
   listScans,
+  listUsers,
+  logActivity,
   registerUser,
   saveScan,
 } from "../../../backend/postgres-database.mjs";
@@ -84,6 +87,7 @@ async function handle(request: Request) {
       if (!user) return json(401, { error: "Invalid username or password." });
       loginAttempts.delete(clientAddress(request));
       const session = await createSession(user.id);
+      await logActivity(user.id, "signed_in");
       return json(200, { user }, { "set-cookie": sessionCookie(session.token) });
     }
     if (request.method === "POST" && url.pathname === "/api/auth/register") {
@@ -91,25 +95,42 @@ async function handle(request: Request) {
       const input = await readJson(request);
       const user = await registerUser(input);
       const session = await createSession(user.id);
+      await logActivity(user.id, "account_created");
       return json(201, { user }, { "set-cookie": sessionCookie(session.token) });
     }
     if (request.method === "POST" && url.pathname === "/api/auth/logout") {
-      await deleteSession(cookieValue(request, "qr_sentinel_session"));
+      const token = cookieValue(request, "qr_sentinel_session");
+      const user = await getSessionUser(token);
+      if (user) await logActivity(user.id, "signed_out");
+      await deleteSession(token);
       return json(200, { ok: true }, { "set-cookie": sessionCookie("", 0) });
     }
 
     const user = await currentUser(request);
     if (!user) return json(401, { error: "Authentication required." });
+    const userScope = user.role === "admin" ? null : user.id;
     if (request.method === "GET" && url.pathname === "/api/scans") {
       const limit = url.searchParams.get("limit");
-      return json(200, { scans: await listScans(limit ? Number(limit) : undefined) });
+      return json(200, { scans: await listScans(limit ? Number(limit) : undefined, userScope) });
     }
-    if (request.method === "GET" && url.pathname === "/api/stats") return json(200, await getStats());
+    if (request.method === "GET" && url.pathname === "/api/stats") return json(200, await getStats(userScope));
+    if (request.method === "GET" && url.pathname === "/api/users") {
+      if (user.role !== "admin") return json(403, { error: "Administrator access required." });
+      return json(200, { users: await listUsers() });
+    }
+    if (request.method === "GET" && url.pathname === "/api/activity") {
+      const requestedUserId = user.role === "admin" ? url.searchParams.get("userId") : user.id;
+      const limit = url.searchParams.get("limit");
+      return json(200, { activity: await listActivity(limit ? Number(limit) : undefined, requestedUserId || null) });
+    }
     if (request.method === "GET" && url.pathname === "/api/iocs") return json(200, { iocs: await listIocs() });
     if (request.method === "POST" && url.pathname === "/api/iocs") {
+      if (user.role !== "admin") return json(403, { error: "Administrator access required." });
       const input = await readJson(request);
       if (!input.indicator || !["url", "domain", "ip"].includes(input.indicatorType)) return json(400, { error: "indicator and a valid indicatorType are required" });
-      return json(201, { ioc: await addIoc(input) });
+      const ioc = await addIoc(input);
+      await logActivity(user.id, "indicator_added", { indicatorType: input.indicatorType, indicator: input.indicator });
+      return json(201, { ioc });
     }
     if (request.method === "POST" && url.pathname === "/api/analyze") {
       const input = await readJson(request);
@@ -119,7 +140,9 @@ async function handle(request: Request) {
         resolveRedirects: input.resolveRedirects !== false,
         lookupIocs: findIocMatches,
       });
-      return json(201, await saveScan(analysis, input));
+      const scan = await saveScan(analysis, { ...input, userId: user.id });
+      await logActivity(user.id, "qr_scanned", { scanId: scan.id, classification: scan.classification, riskScore: scan.riskScore, source: scan.source });
+      return json(201, scan);
     }
     return json(404, { error: "Not found" });
   } catch (error) {

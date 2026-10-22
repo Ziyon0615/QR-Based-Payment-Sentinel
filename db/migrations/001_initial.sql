@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS scans (
   redirect_chain_json JSONB NOT NULL,
   latency_ms DOUBLE PRECISION NOT NULL,
   source TEXT NOT NULL,
-  expected_label TEXT CHECK (expected_label IS NULL OR expected_label IN ('Safe', 'Suspicious', 'Malicious'))
+  expected_label TEXT CHECK (expected_label IS NULL OR expected_label IN ('Safe', 'Suspicious', 'Malicious')),
+  user_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_scans_created_at ON scans(created_at DESC);
@@ -58,6 +59,25 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+
+ALTER TABLE scans ADD COLUMN IF NOT EXISTS user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'scans_user_id_fkey') THEN
+    ALTER TABLE scans ADD CONSTRAINT scans_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL;
+  END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_scans_user_created_at ON scans(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id TEXT PRIMARY KEY,
+  user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+  action TEXT NOT NULL,
+  detail_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_user_created_at ON audit_logs(user_id, created_at DESC);
 
 INSERT INTO users (id, username, email, password_hash, password_salt, role, created_at)
 VALUES (

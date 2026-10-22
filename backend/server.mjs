@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { analyzePayload } from "./engine.mjs";
-import { addIoc, authenticateUser, createSession, deleteSession, findIocMatches, getSessionUser, getStats, listIocs, listScans, registerUser, saveScan } from "./repository.mjs";
+import { addIoc, authenticateUser, createSession, deleteSession, findIocMatches, getSessionUser, getStats, listActivity, listIocs, listScans, listUsers, logActivity, registerUser, saveScan } from "./repository.mjs";
 
 const port = Number(process.env.PORT || 8000);
 const allowedOrigins = new Set((process.env.ALLOWED_ORIGINS || "http://localhost:3000,http://127.0.0.1:3000").split(",").map((value) => value.trim()));
@@ -98,6 +98,7 @@ const server = createServer(async (request, response) => {
       if (!user) return send(request, response, 401, { error: "Invalid username or password." });
       clearLoginAttempts(request);
       const session = await createSession(user.id);
+      await logActivity(user.id, "signed_in");
       return send(request, response, 200, { user }, { "set-cookie": sessionCookie(session.token) });
     }
     if (request.method === "POST" && url.pathname === "/api/auth/register") {
@@ -105,20 +106,37 @@ const server = createServer(async (request, response) => {
       const input = await readJson(request);
       const user = await registerUser(input);
       const session = await createSession(user.id);
+      await logActivity(user.id, "account_created");
       return send(request, response, 201, { user }, { "set-cookie": sessionCookie(session.token) });
     }
     if (request.method === "POST" && url.pathname === "/api/auth/logout") {
-      await deleteSession(cookieValue(request, "qr_sentinel_session"));
+      const token = cookieValue(request, "qr_sentinel_session");
+      const user = await getSessionUser(token);
+      if (user) await logActivity(user.id, "signed_out");
+      await deleteSession(token);
       return send(request, response, 200, { ok: true }, { "set-cookie": sessionCookie("", 0) });
     }
-    if (!await requireUser(request, response)) return;
-    if (request.method === "GET" && url.pathname === "/api/scans") return send(request, response, 200, { scans: await listScans(url.searchParams.get("limit")) });
-    if (request.method === "GET" && url.pathname === "/api/stats") return send(request, response, 200, await getStats());
+    const user = await requireUser(request, response);
+    if (!user) return;
+    const userScope = user.role === "admin" ? null : user.id;
+    if (request.method === "GET" && url.pathname === "/api/scans") return send(request, response, 200, { scans: await listScans(url.searchParams.get("limit"), userScope) });
+    if (request.method === "GET" && url.pathname === "/api/stats") return send(request, response, 200, await getStats(userScope));
+    if (request.method === "GET" && url.pathname === "/api/users") {
+      if (user.role !== "admin") return send(request, response, 403, { error: "Administrator access required." });
+      return send(request, response, 200, { users: await listUsers() });
+    }
+    if (request.method === "GET" && url.pathname === "/api/activity") {
+      const requestedUserId = user.role === "admin" ? url.searchParams.get("userId") : user.id;
+      return send(request, response, 200, { activity: await listActivity(url.searchParams.get("limit"), requestedUserId || null) });
+    }
     if (request.method === "GET" && url.pathname === "/api/iocs") return send(request, response, 200, { iocs: await listIocs() });
     if (request.method === "POST" && url.pathname === "/api/iocs") {
+      if (user.role !== "admin") return send(request, response, 403, { error: "Administrator access required." });
       const input = await readJson(request);
       if (!input.indicator || !["url", "domain", "ip"].includes(input.indicatorType)) return send(request, response, 400, { error: "indicator and a valid indicatorType are required" });
-      return send(request, response, 201, { ioc: await addIoc(input) });
+      const ioc = await addIoc(input);
+      await logActivity(user.id, "indicator_added", { indicatorType: input.indicatorType, indicator: input.indicator });
+      return send(request, response, 201, { ioc });
     }
     if (request.method === "POST" && url.pathname === "/api/analyze") {
       const input = await readJson(request);
@@ -128,7 +146,9 @@ const server = createServer(async (request, response) => {
         resolveRedirects: input.resolveRedirects !== false,
         lookupIocs: findIocMatches,
       });
-      return send(request, response, 201, await saveScan(analysis, input));
+      const scan = await saveScan(analysis, { ...input, userId: user.id });
+      await logActivity(user.id, "qr_scanned", { scanId: scan.id, classification: scan.classification, riskScore: scan.riskScore, source: scan.source });
+      return send(request, response, 201, scan);
     }
     return send(request, response, 404, { error: "Not found" });
   } catch (error) {

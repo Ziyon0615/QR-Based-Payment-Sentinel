@@ -246,7 +246,7 @@ export default function Home() {
         <section className="intro-row"><div><p className="eyebrow">SCAN-TIME PAYMENT DEFENSE</p><h1>Know what’s behind<br />the code <em>before</em> you pay.</h1><p className="lead">Decode, inspect, and risk-score QR payment payloads without opening their destination.</p></div><div className="privacy-note"><span className="lock-dot">◆</span><div><strong>Privacy-first analysis</strong><small>No credentials. No payments. Suspicious links stay closed.</small></div></div></section>
         <section className="scanner-grid">
           <div className="scan-card">
-            <div className="card-heading"><div><span className="step">01</span><h2>Capture a QR code</h2></div><span className="local-chip">Local scanner</span></div>
+            <div className="card-heading"><div><span className="step">01</span><h2>Capture a QR code</h2></div></div>
             <div className={`camera-stage ${cameraOn ? "live" : ""}`}><video ref={videoRef} muted playsInline />{!cameraOn && <div className="camera-empty"><div className="scan-symbol"><i /><i /><i /><i /><span /></div><strong>Ready to inspect</strong><p>Position a payment QR inside the frame or upload a clear image.</p></div>}<div className="scan-corners"><i /><i /><i /><i /></div>{cameraOn && <div className="scan-line" />}</div>
             <canvas ref={canvasRef} className="hidden-canvas" />
             <div className="capture-actions"><button className="primary-action" onClick={cameraOn ? stopCamera : startCamera}>{cameraOn ? "Stop camera" : "Open camera"}</button><label className="secondary-action">Upload image<input type="file" accept="image/*" onChange={handleImage} /></label></div>

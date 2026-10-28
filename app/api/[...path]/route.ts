@@ -1,6 +1,8 @@
 import { analyzePayload } from "../../../backend/engine.mjs";
+import { verifyGoogleCredential } from "../../../backend/google-auth.mjs";
 import {
   addIoc,
+  authenticateGoogleUser,
   authenticateUser,
   createSession,
   deleteIoc,
@@ -85,11 +87,22 @@ async function handle(request: Request) {
     if (request.method === "POST" && url.pathname === "/api/auth/login") {
       if (!allowLoginAttempt(request)) return json(429, { error: "Too many login attempts. Try again in a few minutes." });
       const input = await readJson(request);
-      const user = await authenticateUser(input.username, input.password);
-      if (!user) return json(401, { error: "Invalid username or password." });
+      const user = await authenticateUser(input.email || input.username, input.password);
+      if (!user) return json(401, { error: "Invalid email or password." });
       loginAttempts.delete(clientAddress(request));
       const session = await createSession(user.id);
       await logActivity(user.id, "signed_in");
+      return json(200, { user }, { "set-cookie": sessionCookie(session.token) });
+    }
+    if (request.method === "POST" && url.pathname === "/api/auth/google") {
+      if (!allowLoginAttempt(request)) return json(429, { error: "Too many login attempts. Try again in a few minutes." });
+      const input = await readJson(request);
+      const profile = await verifyGoogleCredential(input.credential);
+      const user = await authenticateGoogleUser(profile);
+      if (!user) throw new Error("Google authentication could not create a user session.");
+      loginAttempts.delete(clientAddress(request));
+      const session = await createSession(user.id);
+      await logActivity(user.id, "signed_in", { provider: "google" });
       return json(200, { user }, { "set-cookie": sessionCookie(session.token) });
     }
     if (request.method === "POST" && url.pathname === "/api/auth/register") {
@@ -172,7 +185,7 @@ async function handle(request: Request) {
     const message = error instanceof Error ? error.message : "Unexpected server error";
     const status = /already registered|duplicate key/i.test(message)
       ? 409
-      : /required|limit|JSON|Payload|Username|Password|Gmail|email/i.test(message)
+      : /required|limit|JSON|Payload|Username|Password|Gmail|Google|email|credential|authentication/i.test(message)
         ? 400
         : 500;
     return json(status, { error: message });

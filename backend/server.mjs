@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { analyzePayload } from "./engine.mjs";
-import { addIoc, authenticateUser, createSession, deleteIoc, deleteSession, findIocMatches, getSessionUser, getStats, listActivity, listIocs, listScans, listUsers, logActivity, registerUser, reviewIoc, saveScan } from "./repository.mjs";
+import { verifyGoogleCredential } from "./google-auth.mjs";
+import { addIoc, authenticateGoogleUser, authenticateUser, createSession, deleteIoc, deleteSession, findIocMatches, getSessionUser, getStats, listActivity, listIocs, listScans, listUsers, logActivity, registerUser, reviewIoc, saveScan } from "./repository.mjs";
 
 const port = Number(process.env.PORT || 8000);
 const allowedOrigins = new Set((process.env.ALLOWED_ORIGINS || "http://localhost:3000,http://127.0.0.1:3000").split(",").map((value) => value.trim()));
@@ -94,11 +95,22 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && url.pathname === "/api/auth/login") {
       if (!allowLoginAttempt(request)) return send(request, response, 429, { error: "Too many login attempts. Try again in a few minutes." });
       const input = await readJson(request);
-      const user = await authenticateUser(input.username, input.password);
-      if (!user) return send(request, response, 401, { error: "Invalid username or password." });
+      const user = await authenticateUser(input.email || input.username, input.password);
+      if (!user) return send(request, response, 401, { error: "Invalid email or password." });
       clearLoginAttempts(request);
       const session = await createSession(user.id);
       await logActivity(user.id, "signed_in");
+      return send(request, response, 200, { user }, { "set-cookie": sessionCookie(session.token) });
+    }
+    if (request.method === "POST" && url.pathname === "/api/auth/google") {
+      if (!allowLoginAttempt(request)) return send(request, response, 429, { error: "Too many login attempts. Try again in a few minutes." });
+      const input = await readJson(request);
+      const profile = await verifyGoogleCredential(input.credential);
+      const user = await authenticateGoogleUser(profile);
+      if (!user) throw new Error("Google authentication could not create a user session.");
+      clearLoginAttempts(request);
+      const session = await createSession(user.id);
+      await logActivity(user.id, "signed_in", { provider: "google" });
       return send(request, response, 200, { user }, { "set-cookie": sessionCookie(session.token) });
     }
     if (request.method === "POST" && url.pathname === "/api/auth/register") {
@@ -176,7 +188,7 @@ const server = createServer(async (request, response) => {
     const message = error?.message || "Unexpected server error";
     const status = /already registered/i.test(message)
       ? 409
-      : /required|limit|JSON|Payload|Username|Password|Gmail|email/i.test(message)
+      : /required|limit|JSON|Payload|Username|Password|Gmail|Google|email|credential|authentication/i.test(message)
         ? 400
         : 500;
     return send(request, response, status, { error: message });

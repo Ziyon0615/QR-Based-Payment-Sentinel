@@ -67,12 +67,13 @@ function hydrateScan(row) {
   };
 }
 export async function registerUser(input) {
-  const username = String(input.username || "").trim();
   const email = String(input.email || "").trim().toLowerCase();
+  const requestedUsername = String(input.username || "").trim();
+  const username = requestedUsername || await availableUsername(pool, email);
   const password = String(input.password || "");
   if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(username)) throw new Error("Username must be 3 to 32 letters, numbers, dots, dashes, or underscores.");
   if (!/[a-zA-Z]/.test(username)) throw new Error("Username cannot contain numbers only. Add at least one letter.");
-  if (email.length > 254 || !/^[a-z0-9._%+-]+@gmail\.com$/i.test(email)) throw new Error("Enter a valid Gmail address ending in @gmail.com.");
+  if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error("Enter a valid email address.");
   if (password.length < 8 || password.length > 128) throw new Error("Password must be between 8 and 128 characters.");
 
   const existing = await pool.query(
@@ -80,7 +81,7 @@ export async function registerUser(input) {
     [username, email],
   );
   if (existing.rows.some((row) => row.username.toLowerCase() === username.toLowerCase())) throw new Error("Username is already registered.");
-  if (existing.rows.some((row) => row.email?.toLowerCase() === email)) throw new Error("Gmail address is already registered.");
+  if (existing.rows.some((row) => row.email?.toLowerCase() === email)) throw new Error("Email address is already registered.");
 
   const salt = randomBytes(16).toString("hex");
   const user = { id: randomUUID(), username, email, role: "user", createdAt: new Date().toISOString() };
@@ -91,15 +92,67 @@ export async function registerUser(input) {
   return user;
 }
 
-export async function authenticateUser(usernameInput, passwordInput) {
-  const username = String(usernameInput || "").trim();
+export async function authenticateUser(identifierInput, passwordInput) {
+  const identifier = String(identifierInput || "").trim();
   const password = String(passwordInput || "");
-  const result = await pool.query("SELECT * FROM users WHERE lower(username) = lower($1) LIMIT 1", [username]);
+  const result = await pool.query("SELECT * FROM users WHERE lower(username) = lower($1) OR lower(email) = lower($1) LIMIT 1", [identifier]);
   const row = result.rows[0];
   if (!row) return null;
   const supplied = Buffer.from(passwordHash(password, row.password_salt), "hex");
   const stored = Buffer.from(row.password_hash, "hex");
   return supplied.length === stored.length && timingSafeEqual(supplied, stored) ? publicUser(row) : null;
+}
+
+async function availableUsername(client, email) {
+  let base = email.split("@", 1)[0].replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 24);
+  if (!/[a-zA-Z]/.test(base)) base = "googleuser";
+  if (base.length < 3) base = `${base}user`.slice(0, 24);
+  let candidate = base;
+  for (let suffix = 1; ; suffix += 1) {
+    const existing = await client.query("SELECT id FROM users WHERE lower(username) = lower($1) LIMIT 1", [candidate]);
+    if (!existing.rowCount) return candidate;
+    candidate = `${base.slice(0, 27)}_${suffix}`.slice(0, 32);
+  }
+}
+
+export async function authenticateGoogleUser(profile) {
+  const subject = String(profile?.subject || "").trim();
+  const email = String(profile?.email || "").trim().toLowerCase();
+  if (!subject || !profile?.emailVerified) throw new Error("A verified Google account is required.");
+  if (!email || email.length > 254) throw new Error("Google did not provide a valid email address.");
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const googleResult = await client.query("SELECT * FROM users WHERE google_subject = $1 LIMIT 1 FOR UPDATE", [subject]);
+    if (googleResult.rows[0]) {
+      await client.query("COMMIT");
+      return publicUser(googleResult.rows[0]);
+    }
+
+    const emailResult = await client.query("SELECT * FROM users WHERE lower(email) = lower($1) LIMIT 1 FOR UPDATE", [email]);
+    const emailUser = emailResult.rows[0];
+    if (emailUser) {
+      throw new Error(emailUser.google_subject
+        ? "This email address is already linked to another Google account."
+        : "An account already uses this email. Sign in with its email and password.");
+    }
+
+    const username = await availableUsername(client, email);
+    const salt = randomBytes(16).toString("hex");
+    const user = { id: randomUUID(), username, email, role: "user", createdAt: new Date().toISOString() };
+    const inserted = await client.query(
+      "INSERT INTO users (id, username, email, google_subject, password_hash, password_salt, role, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *",
+      [user.id, user.username, user.email, subject, passwordHash(randomBytes(32).toString("hex"), salt), salt, user.role, user.createdAt],
+    );
+    await client.query("COMMIT");
+    return publicUser(inserted.rows[0]);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function createSession(userId) {
@@ -290,10 +343,10 @@ export async function getStats(userId = null) {
       `),
       pool.query("SELECT COUNT(*)::int total FROM scans WHERE created_at >= date_trunc('day', NOW())"),
       pool.query(`
-        SELECT day::date::text day, COUNT(scans.id)::int total
-        FROM generate_series(date_trunc('day', NOW()) - interval '6 days', date_trunc('day', NOW()), interval '1 day') day
-        LEFT JOIN scans ON scans.created_at >= day AND scans.created_at < day + interval '1 day'
-        GROUP BY day ORDER BY day
+        SELECT scan_day::date::text AS day, COUNT(scans.id)::int total
+        FROM generate_series(date_trunc('day', NOW()) - interval '6 days', date_trunc('day', NOW()), interval '1 day') AS scan_day
+        LEFT JOIN scans ON scans.created_at >= scan_day AND scans.created_at < scan_day + interval '1 day'
+        GROUP BY scan_day ORDER BY scan_day
       `),
       pool.query(`
         SELECT users.id, users.username, COUNT(scans.id)::int total

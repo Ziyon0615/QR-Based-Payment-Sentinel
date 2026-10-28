@@ -1,10 +1,26 @@
 "use client";
 
 import { ChangeEvent, FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import Script from "next/script";
 import jsQR from "jsqr";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL
   ?? (process.env.NODE_ENV === "development" ? "http://localhost:8000" : "");
+const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || "";
+
+type GoogleCredentialResponse = { credential?: string };
+type GoogleIdentity = {
+  accounts: {
+    id: {
+      initialize(input: { client_id: string; callback: (response: GoogleCredentialResponse) => void }): void;
+      renderButton(parent: HTMLElement, options: Record<string, string | number>): void;
+    };
+  };
+};
+
+declare global {
+  interface Window { google?: GoogleIdentity }
+}
 
 type Classification = "Safe" | "Suspicious" | "Malicious";
 type Indicator = { id: string; category: string; severity: string; score: number; title: string; detail: string; evidence: string };
@@ -239,15 +255,14 @@ export default function Home() {
   async function submitAuthentication(event: FormEvent) {
     event.preventDefault(); setAuthMessage("");
     if (authMode === "register") {
-      if (!/[a-zA-Z]/.test(authForm.username)) { setAuthMessage("Username cannot contain numbers only. Add at least one letter."); return; }
-      if (!/^[a-z0-9._%+-]+@gmail\.com$/i.test(authForm.email.trim())) { setAuthMessage("Enter a valid Gmail address ending in @gmail.com."); return; }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(authForm.email.trim())) { setAuthMessage("Enter a valid email address."); return; }
       if (authForm.password !== authForm.confirmPassword) { setAuthMessage("Passwords do not match."); return; }
     }
     setAuthBusy(true);
     try {
       const response = await apiFetch(`/api/auth/${authMode}`, {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username: authForm.username, email: authForm.email, password: authForm.password }),
+        body: JSON.stringify({ email: authForm.email, password: authForm.password }),
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "Authentication failed.");
@@ -257,13 +272,28 @@ export default function Home() {
     finally { setAuthBusy(false); }
   }
 
+  async function submitGoogleAuthentication(credential: string) {
+    setAuthMessage(""); setAuthBusy(true);
+    try {
+      const response = await apiFetch("/api/auth/google", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ credential }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Google authentication failed.");
+      setUser(body.user); setAuthStatus("authenticated"); setView("dashboard");
+      setAuthForm({ username: "", email: "", password: "", confirmPassword: "" });
+    } catch (error) { setAuthMessage(error instanceof Error ? error.message : "Google authentication failed."); }
+    finally { setAuthBusy(false); }
+  }
+
   async function logout() {
     await apiFetch("/api/auth/logout", { method: "POST" });
     stopCamera(); setUser(null); setAuthStatus("guest"); setHistory([]); setStats(emptyStats); setIocs([]); setUsers([]); setActivity([]); setSelectedUserId(null); setResult(null); setIocMessage("");
   }
 
   if (authStatus === "loading") return <AuthLoading />;
-  if (authStatus === "guest") return <AuthScreen mode={authMode} form={authForm} message={authMessage} busy={authBusy} onModeChange={(mode) => { setAuthMode(mode); setAuthMessage(""); }} onFormChange={setAuthForm} onSubmit={submitAuthentication} />;
+  if (authStatus === "guest") return <AuthScreen mode={authMode} form={authForm} message={authMessage} busy={authBusy} onModeChange={(mode) => { setAuthMode(mode); setAuthMessage(""); }} onFormChange={setAuthForm} onSubmit={submitAuthentication} onGoogleCredential={submitGoogleAuthentication} onGoogleError={setAuthMessage} />;
   const visibleNavItems = navItems;
   const activeIocs = iocs.filter((ioc) => Boolean(ioc.active));
   const pendingIocs = iocs.filter((ioc) => !ioc.active);
@@ -308,13 +338,13 @@ export default function Home() {
       </div>}
 
       {view === "history" && <div className="page data-page">
-        <div className="page-title"><div><p className="eyebrow">LOCAL EVIDENCE LOG</p><h1>Scan history</h1><p>Technical results are stored in SQLite for repeatable evaluation. Full payloads are not displayed.</p></div><button className="primary-action" onClick={() => setView("scan")}>New scan</button></div>
+        <div className="page-title"><div><h1>Scan history</h1><p>Technical results are stored for repeatable evaluation. Full payloads are not displayed.</p></div><button className="primary-action" onClick={() => setView("scan")}>New scan</button></div>
         <div className="summary-cards"><Metric label="Total scans" value={stats.total} /><Metric label="Safe" value={stats.safe} tone="safe" /><Metric label="Suspicious" value={stats.suspicious} tone="suspicious" /><Metric label="Malicious" value={stats.malicious} tone="malicious" /></div>
         <div className="table-card"><div className="table-head"><span>Result</span><span>Payload / destination</span><span>Indicators</span><span>Latency</span><span>Analyzed</span></div>{history.length ? history.map((scan) => <button className="history-row" key={scan.id} onClick={() => { setResult(scan); setView("scan"); }}><span><StatusPill value={scan.classification} /><b>{scan.riskScore}/100</b></span><span><strong>{scan.domain || shortText(scan.payloadPreview)}</strong><small>{scan.username ? `${scan.username} · ` : ""}{scan.payloadType.replaceAll("_", " ")}</small></span><span>{scan.indicators.length}</span><span>{scan.latencyMs.toFixed(0)} ms</span><span>{new Date(scan.createdAt).toLocaleString()}</span></button>) : <div className="empty-table">No scans recorded yet. Analyze a controlled sample to begin.</div>}</div>
       </div>}
 
       {view === "intel" && <div className="page data-page">
-        <div className="page-title"><div><p className="eyebrow">LOCAL CTI STORE</p><h1>Threat intelligence</h1><p>User-submitted indicators require administrator approval before they can affect scan results.</p></div><span className="research-badge">{activeIocs.length} active IoCs</span></div>
+        <div className="page-title"><div><h1>Threat intelligence</h1><p>User-submitted indicators require administrator approval before they can affect scan results.</p></div><span className="research-badge">{activeIocs.length} active IoCs</span></div>
         <div className="intel-grid">
           <form className="panel ioc-form" onSubmit={addIndicator}>
             <div className="panel-title"><div><p className="eyebrow">NEW INDICATOR</p><h2>Submit threat intelligence</h2></div></div>
@@ -417,7 +447,44 @@ function PasswordField({ label, value, autoComplete, placeholder, onChange }: {
   return <label>{label}<span className="password-field"><input type={visible ? "text" : "password"} autoComplete={autoComplete} required minLength={8} maxLength={128} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} /><button type="button" className="password-toggle" onClick={() => setVisible((current) => !current)} aria-label={`${visible ? "Hide" : "Show"} ${label.toLowerCase()}`} aria-pressed={visible}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" /><circle cx="12" cy="12" r="2.75" />{visible && <path d="m4 4 16 16" />}</svg></button></span></label>;
 }
 
-function AuthScreen({ mode, form, message, busy, onModeChange, onFormChange, onSubmit }: {
+function GoogleSignInButton({ disabled, onCredential, onError }: {
+  disabled: boolean;
+  onCredential: (credential: string) => void;
+  onError: (message: string) => void;
+}) {
+  const buttonRef = useRef<HTMLDivElement>(null);
+  const onCredentialRef = useRef(onCredential);
+  const onErrorRef = useRef(onError);
+  const [scriptReady, setScriptReady] = useState(false);
+
+  useEffect(() => { onCredentialRef.current = onCredential; }, [onCredential]);
+  useEffect(() => { onErrorRef.current = onError; }, [onError]);
+  useEffect(() => {
+    const google = window.google;
+    const container = buttonRef.current;
+    if (!scriptReady || !google || !container || !GOOGLE_CLIENT_ID) return;
+    container.replaceChildren();
+    google.accounts.id.initialize({
+      client_id: GOOGLE_CLIENT_ID,
+      callback: (response) => response.credential
+        ? onCredentialRef.current(response.credential)
+        : onErrorRef.current("Google did not return a sign-in credential."),
+    });
+    const buttonWidth = Math.max(220, Math.min(320, container.parentElement?.clientWidth || 320));
+    google.accounts.id.renderButton(container, {
+      type: "standard", theme: "outline", size: "large", shape: "rectangular",
+      text: "continue_with", logo_alignment: "left", width: buttonWidth,
+    });
+  }, [scriptReady]);
+
+  if (!GOOGLE_CLIENT_ID) return null;
+  return <>
+    <Script src="https://accounts.google.com/gsi/client" strategy="afterInteractive" onLoad={() => setScriptReady(true)} onReady={() => setScriptReady(true)} onError={() => onError("Google Sign-In could not be loaded.")} />
+    <div className={`google-signin${disabled ? " disabled" : ""}`} aria-disabled={disabled}><div ref={buttonRef} /></div>
+  </>;
+}
+
+function AuthScreen({ mode, form, message, busy, onModeChange, onFormChange, onSubmit, onGoogleCredential, onGoogleError }: {
   mode: "login" | "register";
   form: { username: string; email: string; password: string; confirmPassword: string };
   message: string;
@@ -425,6 +492,26 @@ function AuthScreen({ mode, form, message, busy, onModeChange, onFormChange, onS
   onModeChange: (mode: "login" | "register") => void;
   onFormChange: (form: { username: string; email: string; password: string; confirmPassword: string }) => void;
   onSubmit: (event: FormEvent) => void;
+  onGoogleCredential: (credential: string) => void;
+  onGoogleError: (message: string) => void;
 }) {
-  return <main className="auth-shell"><section className="auth-card"><div className="auth-intro"><div className="auth-brand"><span className="brand-mark"><span>Q</span></span><span><strong>QRBased</strong><small>Sentinel</small></span></div><p className="eyebrow">PAYMENT QR SECURITY</p><h1>Scan with confidence.</h1><p>Inspect QR payment payloads, review risk signals, and monitor scan activity from a protected workspace.</p><div className="auth-features"><span>◆ Explainable risk scoring</span><span>◆ QR image and camera scanning</span><span>◆ Local threat-intelligence matching</span></div></div><form className="auth-form" onSubmit={onSubmit}><div className="auth-tabs"><button type="button" className={mode === "login" ? "active" : ""} onClick={() => onModeChange("login")}>Sign in</button><button type="button" className={mode === "register" ? "active" : ""} onClick={() => onModeChange("register")}>Register</button></div><div><p className="eyebrow">{mode === "login" ? "WELCOME BACK" : "CREATE AN ACCOUNT"}</p><h2>{mode === "login" ? "Sign in to continue" : "Set up your access"}</h2><p>{mode === "login" ? "Use your account credentials to open the dashboard." : "Create a username with letters and register it with a Gmail address."}</p></div><label>Username<input autoComplete="username" required minLength={3} maxLength={32} pattern="(?=.*[A-Za-z])[A-Za-z0-9_.-]{3,32}" title="Use 3–32 allowed characters and include at least one letter." value={form.username} onChange={(event) => onFormChange({ ...form, username: event.target.value })} placeholder="Enter username" /></label>{mode === "register" && <label>Gmail address<input type="email" autoComplete="email" required maxLength={254} pattern="[A-Za-z0-9._%+-]+@gmail[.]com" title="Enter a Gmail address ending in @gmail.com." value={form.email} onChange={(event) => onFormChange({ ...form, email: event.target.value })} placeholder="name@gmail.com" /></label>}<PasswordField key={`password-${mode}`} label="Password" autoComplete={mode === "login" ? "current-password" : "new-password"} value={form.password} onChange={(password) => onFormChange({ ...form, password })} placeholder="Enter password" />{mode === "register" && <PasswordField label="Confirm password" autoComplete="new-password" value={form.confirmPassword} onChange={(confirmPassword) => onFormChange({ ...form, confirmPassword })} placeholder="Repeat password" />}<button className="analyze-button" disabled={busy}>{busy ? "Please wait…" : mode === "login" ? "Sign in" : "Create account"}<span>→</span></button>{message && <p className="form-message" role="alert">{message}</p>}</form></section></main>;
+  return <main className="auth-shell"><section className="auth-card">
+    <div className="auth-intro">
+      <div className="auth-brand"><span className="brand-mark"><span>Q</span></span><span><strong>QRBased</strong><small>Sentinel</small></span></div>
+      <p className="eyebrow">PAYMENT QR SECURITY</p><h1>Scan with confidence.</h1>
+      <p>Inspect QR payment payloads, review risk signals, and monitor scan activity from a protected workspace.</p>
+      <div className="auth-features"><span>◆ Explainable risk scoring</span><span>◆ QR image and camera scanning</span><span>◆ Local threat-intelligence matching</span></div>
+    </div>
+    <form className="auth-form" onSubmit={onSubmit}>
+      <div className="auth-tabs"><button type="button" className={mode === "login" ? "active" : ""} onClick={() => onModeChange("login")}>Sign in</button><button type="button" className={mode === "register" ? "active" : ""} onClick={() => onModeChange("register")}>Register</button></div>
+      <div><p className="eyebrow">{mode === "login" ? "WELCOME BACK" : "CREATE AN ACCOUNT"}</p><h2>{mode === "login" ? "Sign in to continue" : "Set up your access"}</h2><p>{mode === "login" ? "Use your email and password or continue with Google." : "Create an account with your email or continue with Google."}</p></div>
+      <label>Email address<input type="email" autoComplete="email" required maxLength={254} value={form.email} onChange={(event) => onFormChange({ ...form, email: event.target.value })} placeholder="you@example.com" /></label>
+      <PasswordField key={`password-${mode}`} label="Password" autoComplete={mode === "login" ? "current-password" : "new-password"} value={form.password} onChange={(password) => onFormChange({ ...form, password })} placeholder="Enter password" />
+      {mode === "register" && <PasswordField label="Confirm password" autoComplete="new-password" value={form.confirmPassword} onChange={(confirmPassword) => onFormChange({ ...form, confirmPassword })} placeholder="Repeat password" />}
+      <button className="analyze-button" disabled={busy}>{busy ? "Please wait…" : mode === "login" ? "Sign in" : "Create account"}<span>→</span></button>
+      {GOOGLE_CLIENT_ID && <div className="auth-divider"><span>or</span></div>}
+      <GoogleSignInButton disabled={busy} onCredential={onGoogleCredential} onError={onGoogleError} />
+      {message && <p className="form-message" role="alert">{message}</p>}
+    </form>
+  </section></main>;
 }

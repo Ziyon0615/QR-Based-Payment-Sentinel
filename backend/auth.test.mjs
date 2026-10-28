@@ -73,13 +73,22 @@ test("protects application data and supports login, registration, and logout", a
   const registration = await fetch(`${api.baseUrl}/api/auth/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ username: "new_user", email: "new.user@gmail.com", password: "secure-pass-123" }),
+    body: JSON.stringify({ email: "new_user@example.com", password: "secure-pass-123" }),
   });
   assert.equal(registration.status, 201);
   const registrationBody = await registration.json();
   assert.equal(registrationBody.user.role, "user");
+  assert.equal(registrationBody.user.username, "new_user");
   const userCookie = registration.headers.get("set-cookie")?.split(";", 1)[0];
   assert.ok(userCookie);
+
+  const emailLogin = await fetch(`${api.baseUrl}/api/auth/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "NEW_USER@example.com", password: "secure-pass-123" }),
+  });
+  assert.equal(emailLogin.status, 200);
+  assert.equal((await emailLogin.json()).user.id, registrationBody.user.id);
 
   const userScan = await fetch(`${api.baseUrl}/api/analyze`, {
     method: "POST",
@@ -254,7 +263,7 @@ test("protects application data and supports login, registration, and logout", a
   const duplicateEmail = await fetch(`${api.baseUrl}/api/auth/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ username: "different_user", email: "NEW.USER@gmail.com", password: "secure-pass-123" }),
+    body: JSON.stringify({ username: "different_user", email: "NEW_USER@example.com", password: "secure-pass-123" }),
   });
   assert.equal(duplicateEmail.status, 409);
 
@@ -270,7 +279,7 @@ test("protects application data and supports login, registration, and logout", a
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username: "valid_user", email: "user@example.com", password: "secure-pass-123" }),
   });
-  assert.equal(nonGmailAddress.status, 400);
+  assert.equal(nonGmailAddress.status, 201);
 
   const invalidUsernameCharacters = await fetch(`${api.baseUrl}/api/auth/register`, {
     method: "POST",
@@ -286,12 +295,12 @@ test("protects application data and supports login, registration, and logout", a
   });
   assert.equal(shortPassword.status, 400);
 
-  const missingGmail = await fetch(`${api.baseUrl}/api/auth/register`, {
+  const missingEmail = await fetch(`${api.baseUrl}/api/auth/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username: "valid_user", password: "secure-pass-123" }),
   });
-  assert.equal(missingGmail.status, 400);
+  assert.equal(missingEmail.status, 400);
 
   const logout = await fetch(`${api.baseUrl}/api/auth/logout`, {
     method: "POST",

@@ -9,6 +9,7 @@ async function call(method, ...args) {
 
 export const registerUser = (input) => call("registerUser", input);
 export const authenticateUser = (username, password) => call("authenticateUser", username, password);
+export const authenticateGoogleUser = (profile) => call("authenticateGoogleUser", profile);
 export const createSession = (userId) => call("createSession", userId);
 export const getSessionUser = (token) => call("getSessionUser", token);
 export const deleteSession = (token) => call("deleteSession", token);

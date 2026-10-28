@@ -18,8 +18,9 @@
   },
   "dependencies": {
     "@vercel/functions": "^3.10.2",
+    "google-auth-library": "^11.3.1",
     "jsqr": "^1.4.0",
-    "next": "16.2.6",
+    "next": "16.4.3",
     "pg": "^8.23.1",
     "react": "19.2.6",
     "react-dom": "19.2.6"
@@ -30,8 +31,8 @@
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "eslint": "9.39.4",
-    "eslint-config-next": "16.2.6",
-    "sharp": "0.34.5",
+    "eslint-config-next": "16.4.3",
+    "sharp": "0.35.5",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3"
   },

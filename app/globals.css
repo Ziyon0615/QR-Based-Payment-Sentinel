@@ -38,6 +38,17 @@ button { color: inherit; }
 button, label { -webkit-tap-highlight-color: transparent; }
 .app-shell { min-height: 100vh; }
 .auth-shell { min-height: 100vh; display: grid; place-items: center; padding: 32px; }
+.policy-shell { min-height: 100vh; padding: 48px 20px; }
+.policy-card { width: min(780px, 100%); margin: 0 auto; padding: 54px; border: 1px solid rgba(255,255,255,.7); border-radius: 30px; background: rgba(244,249,250,.82); box-shadow: 0 24px 70px rgba(18,54,49,.14); }
+.policy-brand { display: inline-flex; align-items: center; gap: 13px; margin-bottom: 54px; color: var(--ink); text-decoration: none; }
+.policy-brand > span:last-child { display: grid; }
+.policy-brand strong { font-size: 18px; }
+.policy-brand small { color: var(--green); font-size: 9px; font-weight: 900; letter-spacing: 2px; text-transform: uppercase; }
+.policy-card h1 { margin: 8px 0 4px; font-size: clamp(38px, 7vw, 64px); letter-spacing: -2.5px; }
+.policy-card h2 { margin: 34px 0 10px; font-size: 19px; }
+.policy-card p { color: var(--muted); line-height: 1.75; }
+.policy-updated { margin-top: 0; font-size: 12px; }
+.policy-home { display: inline-block; margin-top: 36px; color: var(--green); font-weight: 800; text-decoration: none; }
 .auth-card { width: min(1020px, 100%); display: grid; grid-template-columns: 1.05fr .95fr; overflow: hidden; border: 1px solid rgba(255,255,255,.62); border-radius: 30px; background: rgba(233,238,242,.84); box-shadow: var(--raised); }
 .auth-intro { padding: 58px; background: radial-gradient(circle at 15% 10%, rgba(255,255,255,.72), transparent 50%), linear-gradient(145deg, rgba(41,169,130,.1), rgba(233,238,242,.7)); }
 .auth-brand { display: flex; align-items: center; gap: 13px; margin-bottom: 70px; }
@@ -53,6 +64,11 @@ button, label { -webkit-tap-highlight-color: transparent; }
 .auth-tabs button.active { color: var(--green-deep); background: var(--paper); box-shadow: var(--raised-sm); }
 .auth-form h2 { margin-bottom: 8px; font-size: 28px; letter-spacing: -1px; }
 .auth-form > div:nth-child(2) > p:last-child { margin-bottom: 27px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.google-signin { min-height: 44px; display: grid; place-items: center; margin-bottom: 14px; overflow: hidden; }
+.google-signin.disabled { opacity: .58; pointer-events: none; }
+.auth-divider { display: flex; align-items: center; gap: 11px; margin: 0 0 16px; color: var(--muted); font-size: 8px; font-weight: 800; letter-spacing: .7px; text-transform: uppercase; }
+.auth-divider::before, .auth-divider::after { content: ""; flex: 1; height: 1px; background: rgba(119,139,130,.22); box-shadow: 0 1px 0 rgba(255,255,255,.7); }
+.auth-divider span { white-space: nowrap; }
 .auth-form label { display: grid; gap: 8px; margin-bottom: 16px; color: var(--muted); font-size: 9px; font-weight: 850; }
 .auth-form input { width: 100%; height: 48px; padding: 0 14px; color: var(--ink); }
 .password-field { position: relative; display: block; }
@@ -590,6 +606,8 @@ footer { max-width: 1304px; margin: 0 auto; padding: 25px 8px 34px; display: fle
   .account-button { min-width: 44px; grid-template-columns: 30px; padding: 7px; }
   .account-button div, .account-button b { display: none; }
   .auth-shell { padding: 14px; }
+  .policy-shell { padding: 14px; }
+  .policy-card { padding: 30px 22px; border-radius: 22px; }
   .auth-card { border-radius: 23px; }
   .auth-form { padding: 28px 22px; }
   .auth-tabs { margin-bottom: 30px; }

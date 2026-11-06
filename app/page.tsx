@@ -161,6 +161,7 @@ export default function Home() {
 
   async function detectCanvas(canvas: HTMLCanvasElement, scanFallbackRegions = true) {
     const Detector = (window as unknown as { BarcodeDetector?: new (input: { formats: string[] }) => { detect(source: CanvasImageSource): Promise<{ rawValue: string }[]> } }).BarcodeDetector;
+    let nativeValue = "";
     if (Detector) {
       let found: { rawValue: string }[] | null = null;
       try {
@@ -168,27 +169,62 @@ export default function Home() {
       } catch { /* Continue with the local pixel decoder. */ }
       if (found) {
         if (found.length > 1) throw new Error(MULTIPLE_QR_MESSAGE);
-        if (found[0]?.rawValue) return found[0].rawValue;
+        nativeValue = found[0]?.rawValue || "";
       }
     }
     const context = canvas.getContext("2d", { willReadFrequently: true });
-    if (!context) return "";
+    if (!context) return nativeValue;
     const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
     const firstCode = jsQR(pixels.data, pixels.width, pixels.height, { inversionAttempts: "attemptBoth" });
-    if (!firstCode) {
-      if (!scanFallbackRegions) return "";
+    type LocatedCode = { data: string; left: number; right: number; top: number; bottom: number };
+    const locatedCodes: LocatedCode[] = [];
+    const addLocatedCode = (data: string, points: { x: number; y: number }[], offsetLeft = 0, offsetTop = 0) => {
+      const candidate: LocatedCode = {
+        data,
+        left: offsetLeft + Math.min(...points.map(({ x }) => x)),
+        right: offsetLeft + Math.max(...points.map(({ x }) => x)),
+        top: offsetTop + Math.min(...points.map(({ y }) => y)),
+        bottom: offsetTop + Math.max(...points.map(({ y }) => y)),
+      };
+      const duplicate = locatedCodes.some((existing) => {
+        const overlapWidth = Math.max(0, Math.min(existing.right, candidate.right) - Math.max(existing.left, candidate.left));
+        const overlapHeight = Math.max(0, Math.min(existing.bottom, candidate.bottom) - Math.max(existing.top, candidate.top));
+        const overlapArea = overlapWidth * overlapHeight;
+        const existingArea = (existing.right - existing.left) * (existing.bottom - existing.top);
+        const candidateArea = (candidate.right - candidate.left) * (candidate.bottom - candidate.top);
+        return overlapArea > Math.min(existingArea, candidateArea) * 0.5;
+      });
+      if (!duplicate) locatedCodes.push(candidate);
+      if (locatedCodes.length > 1) throw new Error(MULTIPLE_QR_MESSAGE);
+    };
 
-      // Multiple QR codes can confuse jsQR's whole-frame locator. Decode four
-      // overlapping regions and compare their positions to count distinct codes.
-      type RegionalCode = { data: string; left: number; right: number; top: number; bottom: number };
-      const regionalCodes: RegionalCode[] = [];
+    if (firstCode) {
+      addLocatedCode(firstCode.data, [
+        firstCode.location.topLeftCorner,
+        firstCode.location.topRightCorner,
+        firstCode.location.bottomRightCorner,
+        firstCode.location.bottomLeftCorner,
+      ]);
+    }
+
+    // Some mobile BarcodeDetector implementations return only their strongest
+    // result. Verify overlapping regions before accepting that single result.
+    if (scanFallbackRegions || nativeValue) {
       const verticalWidth = Math.ceil(pixels.width * 0.6);
       const horizontalHeight = Math.ceil(pixels.height * 0.6);
+      const focusedWidth = Math.ceil(pixels.width * 0.45);
+      const focusedHeight = Math.ceil(pixels.height * 0.45);
       const regions = [
         { left: 0, top: 0, width: verticalWidth, height: pixels.height },
         { left: pixels.width - verticalWidth, top: 0, width: verticalWidth, height: pixels.height },
         { left: 0, top: 0, width: pixels.width, height: horizontalHeight },
         { left: 0, top: pixels.height - horizontalHeight, width: pixels.width, height: horizontalHeight },
+        ...[0, 0.275, 0.55].map((position) => ({ left: Math.round(pixels.width * position), top: 0, width: focusedWidth, height: pixels.height })),
+        ...[0, 0.275, 0.55].map((position) => ({ left: 0, top: Math.round(pixels.height * position), width: pixels.width, height: focusedHeight })),
+        { left: 0, top: 0, width: verticalWidth, height: horizontalHeight },
+        { left: pixels.width - verticalWidth, top: 0, width: verticalWidth, height: horizontalHeight },
+        { left: 0, top: pixels.height - horizontalHeight, width: verticalWidth, height: horizontalHeight },
+        { left: pixels.width - verticalWidth, top: pixels.height - horizontalHeight, width: verticalWidth, height: horizontalHeight },
       ];
       for (const region of regions) {
         const regionPixels = new Uint8ClampedArray(region.width * region.height * 4);
@@ -199,61 +235,42 @@ export default function Home() {
         const code = jsQR(regionPixels, region.width, region.height, { inversionAttempts: "attemptBoth" });
         if (!code) continue;
         const points = [code.location.topLeftCorner, code.location.topRightCorner, code.location.bottomRightCorner, code.location.bottomLeftCorner];
-        const candidate: RegionalCode = {
-          data: code.data,
-          left: region.left + Math.min(...points.map(({ x }) => x)),
-          right: region.left + Math.max(...points.map(({ x }) => x)),
-          top: region.top + Math.min(...points.map(({ y }) => y)),
-          bottom: region.top + Math.max(...points.map(({ y }) => y)),
-        };
-        const duplicate = regionalCodes.some((existing) => {
-          const overlapWidth = Math.max(0, Math.min(existing.right, candidate.right) - Math.max(existing.left, candidate.left));
-          const overlapHeight = Math.max(0, Math.min(existing.bottom, candidate.bottom) - Math.max(existing.top, candidate.top));
-          const overlapArea = overlapWidth * overlapHeight;
-          const existingArea = (existing.right - existing.left) * (existing.bottom - existing.top);
-          const candidateArea = (candidate.right - candidate.left) * (candidate.bottom - candidate.top);
-          return overlapArea > Math.min(existingArea, candidateArea) * 0.5;
-        });
-        if (!duplicate) regionalCodes.push(candidate);
-        if (regionalCodes.length > 1) throw new Error(MULTIPLE_QR_MESSAGE);
+        addLocatedCode(code.data, points, region.left, region.top);
       }
-      return regionalCodes[0]?.data || "";
     }
 
-    // jsQR returns one result at a time. Mask the first result and decode again
-    // so browsers without BarcodeDetector still reject images with two codes.
-    const maskedPixels = new Uint8ClampedArray(pixels.data);
-    const corners = [
-      firstCode.location.topLeftCorner,
-      firstCode.location.topRightCorner,
-      firstCode.location.bottomRightCorner,
-      firstCode.location.bottomLeftCorner,
-    ];
-    const padding = 8;
-    const left = Math.max(0, Math.floor(Math.min(...corners.map(({ x }) => x)) - padding));
-    const right = Math.min(pixels.width - 1, Math.ceil(Math.max(...corners.map(({ x }) => x)) + padding));
-    const top = Math.max(0, Math.floor(Math.min(...corners.map(({ y }) => y)) - padding));
-    const bottom = Math.min(pixels.height - 1, Math.ceil(Math.max(...corners.map(({ y }) => y)) + padding));
-    for (let y = top; y <= bottom; y += 1) {
-      for (let x = left; x <= right; x += 1) {
-        const offset = (y * pixels.width + x) * 4;
-        maskedPixels[offset] = 255;
-        maskedPixels[offset + 1] = 255;
-        maskedPixels[offset + 2] = 255;
-        maskedPixels[offset + 3] = 255;
+    if (firstCode) {
+      // Mask the first result and decode again as an additional check for a
+      // second code that may not have been isolated by the regional scans.
+      const maskedPixels = new Uint8ClampedArray(pixels.data);
+      const corners = [firstCode.location.topLeftCorner, firstCode.location.topRightCorner, firstCode.location.bottomRightCorner, firstCode.location.bottomLeftCorner];
+      const padding = 8;
+      const left = Math.max(0, Math.floor(Math.min(...corners.map(({ x }) => x)) - padding));
+      const right = Math.min(pixels.width - 1, Math.ceil(Math.max(...corners.map(({ x }) => x)) + padding));
+      const top = Math.max(0, Math.floor(Math.min(...corners.map(({ y }) => y)) - padding));
+      const bottom = Math.min(pixels.height - 1, Math.ceil(Math.max(...corners.map(({ y }) => y)) + padding));
+      for (let y = top; y <= bottom; y += 1) {
+        for (let x = left; x <= right; x += 1) {
+          const offset = (y * pixels.width + x) * 4;
+          maskedPixels[offset] = 255;
+          maskedPixels[offset + 1] = 255;
+          maskedPixels[offset + 2] = 255;
+          maskedPixels[offset + 3] = 255;
+        }
       }
+      const secondCode = jsQR(maskedPixels, pixels.width, pixels.height, { inversionAttempts: "attemptBoth" });
+      if (secondCode) throw new Error(MULTIPLE_QR_MESSAGE);
     }
-    const secondCode = jsQR(maskedPixels, pixels.width, pixels.height, { inversionAttempts: "attemptBoth" });
-    if (secondCode) throw new Error(MULTIPLE_QR_MESSAGE);
-    return firstCode.data;
+    return nativeValue || locatedCodes[0]?.data || "";
   }
 
   async function scanFrame() {
     const video = videoRef.current, canvas = canvasRef.current;
     if (!video || !canvas || !streamRef.current || scanLockRef.current) return;
     if (video.readyState >= 2 && video.videoWidth) {
-      canvas.width = video.videoWidth; canvas.height = video.videoHeight;
-      canvas.getContext("2d", { willReadFrequently: true })?.drawImage(video, 0, 0);
+      const scale = Math.min(1, 960 / video.videoWidth);
+      canvas.width = Math.round(video.videoWidth * scale); canvas.height = Math.round(video.videoHeight * scale);
+      canvas.getContext("2d", { willReadFrequently: true })?.drawImage(video, 0, 0, canvas.width, canvas.height);
       try {
         const value = await detectCanvas(canvas, fallbackScanCounterRef.current++ % 4 === 0);
         if (value) { scanLockRef.current = true; stopCamera(); await submitPayload(value, "camera"); return; }
@@ -391,13 +408,13 @@ export default function Home() {
         <section className="scanner-grid">
           <div className="scan-card">
             <div className="card-heading"><div><span className="step">01</span><h2>Capture a QR code</h2></div></div>
-            <div className={`camera-stage ${cameraOn ? "live" : ""}`}><video ref={videoRef} muted playsInline />{!cameraOn && <div className="camera-empty"><div className="scan-symbol"><i /><i /><i /><i /><span /></div><strong>Ready to inspect</strong><p>Position a payment QR inside the frame or upload a clear image.</p></div>}<div className="scan-corners"><i /><i /><i /><i /></div>{cameraOn && <div className="scan-line" />}</div>
+            <div className={`camera-stage ${cameraOn ? "live" : ""}`}><video ref={videoRef} muted playsInline />{!cameraOn && <div className="camera-empty"><div className="scan-symbol"><i /><i /><i /><i /><span /></div><strong>Ready to inspect</strong><p>Position a payment QR inside the frame or upload a clear image.</p></div>}<div className="scan-corners"><i /><i /><i /><i /></div>{cameraOn && <div className="scan-line" />}{message === MULTIPLE_QR_MESSAGE && <div className="camera-warning" role="alert"><span>!</span><div><strong>Multiple QR codes detected</strong><p>{MULTIPLE_QR_MESSAGE}</p></div></div>}</div>
             <canvas ref={canvasRef} className="hidden-canvas" />
             <div className="capture-actions"><button className="primary-action" onClick={cameraOn ? stopCamera : startCamera}>{cameraOn ? "Stop camera" : "Open camera"}</button><label className="secondary-action">Upload image<input type="file" accept="image/*" onChange={handleImage} /></label></div>
             <div className="divider"><span>or inspect decoded content</span></div>
             <textarea value={payload} onChange={(event) => setPayload(event.target.value)} placeholder="Paste a URL, deep link, or EMV payment payload…" aria-label="Decoded QR payload" />
             <div className="analysis-options"><label><input type="checkbox" checked={resolveRedirects} onChange={(event) => setResolveRedirects(event.target.checked)} /> Check redirect chain</label><label>Expected label<select value={expectedLabel} onChange={(event) => setExpectedLabel(event.target.value)}><option value="">Not labeled</option><option>Safe</option><option>Suspicious</option><option>Malicious</option></select></label></div>
-            <button className="analyze-button" disabled={busy} onClick={() => submitPayload(payload, "manual")}>{busy ? "Analyzing safely…" : "Analyze payload"}<span>→</span></button>{message && <p className="form-message" role="alert">{message}</p>}
+            <button className="analyze-button" disabled={busy} onClick={() => submitPayload(payload, "manual")}>{busy ? "Analyzing safely…" : "Analyze payload"}<span>→</span></button>{message && message !== MULTIPLE_QR_MESSAGE && <p className="form-message" role="alert">{message}</p>}
           </div>
           <div className="result-panel">
             <div className="card-heading"><div><span className="step">02</span><h2>Risk assessment</h2></div>{result && <span className="latency">{result.latencyMs.toFixed(0)} ms</span>}</div>

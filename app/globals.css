@@ -294,6 +294,10 @@ h1, h2, h3, h4, p { margin-top: 0; }
 .camera-empty { text-align: center; max-width: 300px; padding: 20px; }
 .camera-empty strong { display: block; font-size: 16px; margin-top: 21px; }
 .camera-empty p { color: var(--muted); font-size: 11px; line-height: 1.6; margin: 7px 0 0; }
+.camera-warning { position: absolute; z-index: 5; left: 22px; right: 22px; top: 50%; transform: translateY(-50%); display: grid; grid-template-columns: 38px 1fr; align-items: center; gap: 13px; padding: 16px; border: 1px solid rgba(173,65,58,.24); border-radius: 16px; background: rgba(255,245,243,.96); color: #843c37; box-shadow: 0 14px 34px rgba(76,34,31,.25); backdrop-filter: blur(10px); }
+.camera-warning > span { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 50%; background: #a94d46; color: white; font-size: 21px; font-weight: 900; }
+.camera-warning strong { display: block; font-size: 13px; }
+.camera-warning p { margin: 4px 0 0; font-size: 10px; line-height: 1.45; }
 .scan-symbol {
   width: 82px;
   height: 82px;

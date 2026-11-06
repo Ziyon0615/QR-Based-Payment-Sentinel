@@ -3,6 +3,7 @@
 import { ChangeEvent, FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import Script from "next/script";
 import jsQR from "jsqr";
+import { countVisibleQrCodes } from "./qr-pattern";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL
   ?? (process.env.NODE_ENV === "development" ? "http://localhost:8000" : "");
@@ -176,6 +177,7 @@ export default function Home() {
     const context = canvas.getContext("2d", { willReadFrequently: true });
     if (!context) return nativeValue;
     const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+    if (scanFallbackRegions && countVisibleQrCodes(pixels.data, pixels.width, pixels.height) > 1) throw new Error(MULTIPLE_QR_MESSAGE);
     const firstCode = jsQR(pixels.data, pixels.width, pixels.height, { inversionAttempts: "attemptBoth" });
     type LocatedCode = { data: string; left: number; right: number; top: number; bottom: number };
     const locatedCodes: LocatedCode[] = [];

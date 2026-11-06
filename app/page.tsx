@@ -57,6 +57,7 @@ const shortText = (value: string | null | undefined, length = 48) => {
 };
 const percentage = (value: number, total: number) => total ? `${((value / total) * 100).toFixed(1)}%` : "0.0%";
 const apiFetch = (path: string, init: RequestInit = {}) => fetch(`${API_URL}${path}`, { ...init, credentials: "include" });
+const MULTIPLE_QR_MESSAGE = "Only one QR code at a time can be scanned.";
 
 export default function Home() {
   const [view, setView] = useState<(typeof navItems)[number][0]>("dashboard");
@@ -89,6 +90,7 @@ export default function Home() {
   const streamRef = useRef<MediaStream | null>(null);
   const frameRef = useRef<number | null>(null);
   const scanLockRef = useRef(false);
+  const fallbackScanCounterRef = useRef(0);
 
   const refresh = useCallback(async () => {
     try {
@@ -157,18 +159,93 @@ export default function Home() {
     finally { setBusy(false); }
   }
 
-  async function detectCanvas(canvas: HTMLCanvasElement) {
+  async function detectCanvas(canvas: HTMLCanvasElement, scanFallbackRegions = true) {
     const Detector = (window as unknown as { BarcodeDetector?: new (input: { formats: string[] }) => { detect(source: CanvasImageSource): Promise<{ rawValue: string }[]> } }).BarcodeDetector;
     if (Detector) {
+      let found: { rawValue: string }[] | null = null;
       try {
-        const found = await new Detector({ formats: ["qr_code"] }).detect(canvas);
-        if (found[0]?.rawValue) return found[0].rawValue;
+        found = await new Detector({ formats: ["qr_code"] }).detect(canvas);
       } catch { /* Continue with the local pixel decoder. */ }
+      if (found) {
+        if (found.length > 1) throw new Error(MULTIPLE_QR_MESSAGE);
+        if (found[0]?.rawValue) return found[0].rawValue;
+      }
     }
     const context = canvas.getContext("2d", { willReadFrequently: true });
     if (!context) return "";
     const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
-    return jsQR(pixels.data, pixels.width, pixels.height, { inversionAttempts: "attemptBoth" })?.data || "";
+    const firstCode = jsQR(pixels.data, pixels.width, pixels.height, { inversionAttempts: "attemptBoth" });
+    if (!firstCode) {
+      if (!scanFallbackRegions) return "";
+
+      // Multiple QR codes can confuse jsQR's whole-frame locator. Decode four
+      // overlapping regions and compare their positions to count distinct codes.
+      type RegionalCode = { data: string; left: number; right: number; top: number; bottom: number };
+      const regionalCodes: RegionalCode[] = [];
+      const verticalWidth = Math.ceil(pixels.width * 0.6);
+      const horizontalHeight = Math.ceil(pixels.height * 0.6);
+      const regions = [
+        { left: 0, top: 0, width: verticalWidth, height: pixels.height },
+        { left: pixels.width - verticalWidth, top: 0, width: verticalWidth, height: pixels.height },
+        { left: 0, top: 0, width: pixels.width, height: horizontalHeight },
+        { left: 0, top: pixels.height - horizontalHeight, width: pixels.width, height: horizontalHeight },
+      ];
+      for (const region of regions) {
+        const regionPixels = new Uint8ClampedArray(region.width * region.height * 4);
+        for (let y = 0; y < region.height; y += 1) {
+          const sourceStart = ((region.top + y) * pixels.width + region.left) * 4;
+          regionPixels.set(pixels.data.subarray(sourceStart, sourceStart + region.width * 4), y * region.width * 4);
+        }
+        const code = jsQR(regionPixels, region.width, region.height, { inversionAttempts: "attemptBoth" });
+        if (!code) continue;
+        const points = [code.location.topLeftCorner, code.location.topRightCorner, code.location.bottomRightCorner, code.location.bottomLeftCorner];
+        const candidate: RegionalCode = {
+          data: code.data,
+          left: region.left + Math.min(...points.map(({ x }) => x)),
+          right: region.left + Math.max(...points.map(({ x }) => x)),
+          top: region.top + Math.min(...points.map(({ y }) => y)),
+          bottom: region.top + Math.max(...points.map(({ y }) => y)),
+        };
+        const duplicate = regionalCodes.some((existing) => {
+          const overlapWidth = Math.max(0, Math.min(existing.right, candidate.right) - Math.max(existing.left, candidate.left));
+          const overlapHeight = Math.max(0, Math.min(existing.bottom, candidate.bottom) - Math.max(existing.top, candidate.top));
+          const overlapArea = overlapWidth * overlapHeight;
+          const existingArea = (existing.right - existing.left) * (existing.bottom - existing.top);
+          const candidateArea = (candidate.right - candidate.left) * (candidate.bottom - candidate.top);
+          return overlapArea > Math.min(existingArea, candidateArea) * 0.5;
+        });
+        if (!duplicate) regionalCodes.push(candidate);
+        if (regionalCodes.length > 1) throw new Error(MULTIPLE_QR_MESSAGE);
+      }
+      return regionalCodes[0]?.data || "";
+    }
+
+    // jsQR returns one result at a time. Mask the first result and decode again
+    // so browsers without BarcodeDetector still reject images with two codes.
+    const maskedPixels = new Uint8ClampedArray(pixels.data);
+    const corners = [
+      firstCode.location.topLeftCorner,
+      firstCode.location.topRightCorner,
+      firstCode.location.bottomRightCorner,
+      firstCode.location.bottomLeftCorner,
+    ];
+    const padding = 8;
+    const left = Math.max(0, Math.floor(Math.min(...corners.map(({ x }) => x)) - padding));
+    const right = Math.min(pixels.width - 1, Math.ceil(Math.max(...corners.map(({ x }) => x)) + padding));
+    const top = Math.max(0, Math.floor(Math.min(...corners.map(({ y }) => y)) - padding));
+    const bottom = Math.min(pixels.height - 1, Math.ceil(Math.max(...corners.map(({ y }) => y)) + padding));
+    for (let y = top; y <= bottom; y += 1) {
+      for (let x = left; x <= right; x += 1) {
+        const offset = (y * pixels.width + x) * 4;
+        maskedPixels[offset] = 255;
+        maskedPixels[offset + 1] = 255;
+        maskedPixels[offset + 2] = 255;
+        maskedPixels[offset + 3] = 255;
+      }
+    }
+    const secondCode = jsQR(maskedPixels, pixels.width, pixels.height, { inversionAttempts: "attemptBoth" });
+    if (secondCode) throw new Error(MULTIPLE_QR_MESSAGE);
+    return firstCode.data;
   }
 
   async function scanFrame() {
@@ -178,7 +255,7 @@ export default function Home() {
       canvas.width = video.videoWidth; canvas.height = video.videoHeight;
       canvas.getContext("2d", { willReadFrequently: true })?.drawImage(video, 0, 0);
       try {
-        const value = await detectCanvas(canvas);
+        const value = await detectCanvas(canvas, fallbackScanCounterRef.current++ % 4 === 0);
         if (value) { scanLockRef.current = true; stopCamera(); await submitPayload(value, "camera"); return; }
       } catch (error) { setMessage(error instanceof Error ? error.message : "Camera scan failed."); stopCamera(); return; }
     }
@@ -187,6 +264,7 @@ export default function Home() {
 
   async function startCamera() {
     setMessage("");
+    fallbackScanCounterRef.current = 0;
     if (!navigator.mediaDevices?.getUserMedia) { setMessage("Camera access is not supported by this browser."); return; }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });

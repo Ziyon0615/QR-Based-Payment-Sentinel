@@ -91,6 +91,7 @@ export default function Home() {
   const frameRef = useRef<number | null>(null);
   const scanLockRef = useRef(false);
   const fallbackScanCounterRef = useRef(0);
+  const scanCandidateRef = useRef<{ value: string; firstSeen: number; lastSeen: number; confirmations: number } | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -140,7 +141,7 @@ export default function Home() {
   const stopCamera = useCallback(() => {
     if (frameRef.current) cancelAnimationFrame(frameRef.current);
     streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null; scanLockRef.current = false; setCameraOn(false);
+    streamRef.current = null; scanLockRef.current = false; scanCandidateRef.current = null; setCameraOn(false);
   }, []);
   useEffect(() => () => stopCamera(), [stopCamera]);
 
@@ -160,17 +161,17 @@ export default function Home() {
   }
 
   async function detectCanvas(canvas: HTMLCanvasElement, scanFallbackRegions = true) {
-    const Detector = (window as unknown as { BarcodeDetector?: new (input: { formats: string[] }) => { detect(source: CanvasImageSource): Promise<{ rawValue: string }[]> } }).BarcodeDetector;
+    type DetectedBarcode = { rawValue: string; boundingBox?: { x: number; y: number; width: number; height: number }; cornerPoints?: { x: number; y: number }[] };
+    const Detector = (window as unknown as { BarcodeDetector?: new (input: { formats: string[] }) => { detect(source: CanvasImageSource): Promise<DetectedBarcode[]> } }).BarcodeDetector;
+    const detector = Detector ? new Detector({ formats: ["qr_code"] }) : null;
+    let nativeFound: DetectedBarcode[] = [];
     let nativeValue = "";
-    if (Detector) {
-      let found: { rawValue: string }[] | null = null;
+    if (detector) {
       try {
-        found = await new Detector({ formats: ["qr_code"] }).detect(canvas);
+        nativeFound = await detector.detect(canvas);
       } catch { /* Continue with the local pixel decoder. */ }
-      if (found) {
-        if (found.length > 1) throw new Error(MULTIPLE_QR_MESSAGE);
-        nativeValue = found[0]?.rawValue || "";
-      }
+      if (nativeFound.length > 1) throw new Error(MULTIPLE_QR_MESSAGE);
+      nativeValue = nativeFound[0]?.rawValue || "";
     }
     const context = canvas.getContext("2d", { willReadFrequently: true });
     if (!context) return nativeValue;
@@ -197,6 +198,24 @@ export default function Home() {
       if (!duplicate) locatedCodes.push(candidate);
       if (locatedCodes.length > 1) throw new Error(MULTIPLE_QR_MESSAGE);
     };
+    const nativeValues = new Set(nativeFound.map(({ rawValue }) => rawValue).filter(Boolean));
+    const addNativeCode = (code: DetectedBarcode, offsetLeft = 0, offsetTop = 0) => {
+      if (code.rawValue) nativeValues.add(code.rawValue);
+      if (nativeValues.size > 1) throw new Error(MULTIPLE_QR_MESSAGE);
+      const points = code.cornerPoints?.length
+        ? code.cornerPoints
+        : code.boundingBox
+          ? [
+              { x: code.boundingBox.x, y: code.boundingBox.y },
+              { x: code.boundingBox.x + code.boundingBox.width, y: code.boundingBox.y },
+              { x: code.boundingBox.x + code.boundingBox.width, y: code.boundingBox.y + code.boundingBox.height },
+              { x: code.boundingBox.x, y: code.boundingBox.y + code.boundingBox.height },
+            ]
+          : [];
+      if (points.length) addLocatedCode(code.rawValue, points, offsetLeft, offsetTop);
+    };
+
+    nativeFound.forEach((code) => addNativeCode(code));
 
     if (firstCode) {
       addLocatedCode(firstCode.data, [
@@ -237,6 +256,21 @@ export default function Home() {
         const points = [code.location.topLeftCorner, code.location.topRightCorner, code.location.bottomRightCorner, code.location.bottomLeftCorner];
         addLocatedCode(code.data, points, region.left, region.top);
       }
+
+      // Some phones expose only one full-frame barcode. Scan overlapping
+      // quadrants with the native detector to isolate any additional codes.
+      if (detector && nativeValue) {
+        for (const region of regions.slice(-4)) {
+          const crop = document.createElement("canvas");
+          crop.width = region.width; crop.height = region.height;
+          crop.getContext("2d")?.drawImage(canvas, region.left, region.top, region.width, region.height, 0, 0, region.width, region.height);
+          let regionalNativeCodes: DetectedBarcode[] = [];
+          try {
+            regionalNativeCodes = await detector.detect(crop);
+          } catch { /* The pixel decoder above remains available. */ }
+          regionalNativeCodes.forEach((code) => addNativeCode(code, region.left, region.top));
+        }
+      }
     }
 
     if (firstCode) {
@@ -272,8 +306,22 @@ export default function Home() {
       canvas.width = Math.round(video.videoWidth * scale); canvas.height = Math.round(video.videoHeight * scale);
       canvas.getContext("2d", { willReadFrequently: true })?.drawImage(video, 0, 0, canvas.width, canvas.height);
       try {
-        const value = await detectCanvas(canvas, fallbackScanCounterRef.current++ % 4 === 0);
-        if (value) { scanLockRef.current = true; stopCamera(); await submitPayload(value, "camera"); return; }
+        const value = await detectCanvas(canvas, Boolean(scanCandidateRef.current) || fallbackScanCounterRef.current++ % 4 === 0);
+        const now = performance.now();
+        const candidate = scanCandidateRef.current;
+        if (value) {
+          if (candidate && candidate.value !== value) throw new Error(MULTIPLE_QR_MESSAGE);
+          if (!candidate) {
+            scanCandidateRef.current = { value, firstSeen: now, lastSeen: now, confirmations: 1 };
+          } else {
+            candidate.lastSeen = now; candidate.confirmations += 1;
+            if (candidate.confirmations >= 2 && now - candidate.firstSeen >= 700) {
+              scanLockRef.current = true; stopCamera(); await submitPayload(value, "camera"); return;
+            }
+          }
+        } else if (candidate && now - candidate.lastSeen > 1200) {
+          scanCandidateRef.current = null;
+        }
       } catch (error) { setMessage(error instanceof Error ? error.message : "Camera scan failed."); stopCamera(); return; }
     }
     frameRef.current = requestAnimationFrame(scanFrame);
@@ -282,6 +330,7 @@ export default function Home() {
   async function startCamera() {
     setMessage("");
     fallbackScanCounterRef.current = 0;
+    scanCandidateRef.current = null;
     if (!navigator.mediaDevices?.getUserMedia) { setMessage("Camera access is not supported by this browser."); return; }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });
